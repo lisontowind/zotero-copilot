@@ -73,14 +73,67 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add updates.json
-          git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "updates.json already matches the release version"
-            exit 0
+          $repo = "${{ github.repository }}"
+          $version = "${{ steps.version.outputs.version }}"
+          $branch = "release-metadata-$version"
+
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            git fetch origin main
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to fetch origin/main on attempt $attempt"
+            }
+
+            git switch -C $branch origin/main
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to switch to $branch on attempt $attempt"
+            }
+
+            $data = @{
+              addons = @{
+                "zotero-copilot@example.com" = @{
+                  updates = @(
+                    @{
+                      version = $version
+                      update_link = "https://github.com/$repo/releases/latest/download/zotero-copilot.xpi"
+                      applications = @{
+                        zotero = @{
+                          strict_min_version = "8.0"
+                          strict_max_version = "9.*"
+                        }
+                      }
+                    }
+                  )
+                }
+              }
+            }
+            $json = $data | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText((Join-Path $PWD "updates.json"), $json + "`n", [System.Text.UTF8Encoding]::new($false))
+
+            git add updates.json
+            git diff --cached --quiet
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "updates.json already matches the release version"
+              exit 0
+            }
+
+            git commit -m "chore: update release metadata for v$version"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to commit updates.json on attempt $attempt"
+            }
+
+            git pull --rebase origin main
+            if ($LASTEXITCODE -ne 0) {
+              git rebase --abort
+              continue
+            }
+
+            git push origin HEAD:main
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
           }
-          git commit -m "chore: update release metadata for v${{ steps.version.outputs.version }}"
-          git push origin HEAD:main
+
+          throw "Failed to update release metadata on main after 3 attempts"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
