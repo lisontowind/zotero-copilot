@@ -33,6 +33,15 @@ jobs:
             throw "Tag version $tagVersion does not match manifest version ${{ steps.version.outputs.version }}"
           }
 
+      - name: Validate tag commit is on main
+        shell: pwsh
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "${env:GITHUB_SHA}" origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag ${env:GITHUB_REF_NAME} points to ${env:GITHUB_SHA}, which is not on origin/main. Push main first, then push the tag."
+          }
+
       - name: Build XPI
         shell: pwsh
         run: .\build.ps1
@@ -42,98 +51,70 @@ jobs:
         run: |
           Copy-Item -LiteralPath ".\dist\zotero-copilot-${{ steps.version.outputs.version }}.xpi" -Destination ".\zotero-copilot.xpi" -Force
 
-      - name: Update release metadata
-        shell: pwsh
-        run: |
-          $repo = "${{ github.repository }}"
-          $version = "${{ steps.version.outputs.version }}"
-          $data = @{
-            addons = @{
-              "zotero-copilot@example.com" = @{
-                updates = @(
-                  @{
-                    version = $version
-                    update_link = "https://github.com/$repo/releases/latest/download/zotero-copilot.xpi"
-                    applications = @{
-                      zotero = @{
-                        strict_min_version = "8.0"
-                        strict_max_version = "9.*"
-                      }
-                    }
-                  }
-                )
-              }
-            }
-          }
-          $json = $data | ConvertTo-Json -Depth 10
-          [System.IO.File]::WriteAllText((Join-Path $PWD "updates.json"), $json + "`n", [System.Text.UTF8Encoding]::new($false))
-
-      - name: Commit metadata to main
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          $repo = "${{ github.repository }}"
-          $version = "${{ steps.version.outputs.version }}"
-          $branch = "release-metadata-$version"
-
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            git fetch origin main
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to fetch origin/main on attempt $attempt"
-            }
-
-            git switch -C $branch origin/main
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to switch to $branch on attempt $attempt"
-            }
-
-            $data = @{
-              addons = @{
-                "zotero-copilot@example.com" = @{
-                  updates = @(
-                    @{
-                      version = $version
-                      update_link = "https://github.com/$repo/releases/latest/download/zotero-copilot.xpi"
-                      applications = @{
-                        zotero = @{
-                          strict_min_version = "8.0"
-                          strict_max_version = "9.*"
+      - name: Update release metadata on main
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        with:
+          script: |
+            const version = process.env.RELEASE_VERSION;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const path = "updates.json";
+            const contentObject = {
+              addons: {
+                "zotero-copilot@example.com": {
+                  updates: [
+                    {
+                      version,
+                      update_link: `https://github.com/${owner}/${repo}/releases/latest/download/zotero-copilot.xpi`,
+                      applications: {
+                        zotero: {
+                          strict_min_version: "8.0",
+                          strict_max_version: "9.*"
                         }
                       }
                     }
-                  )
+                  ]
                 }
               }
-            }
-            $json = $data | ConvertTo-Json -Depth 10
-            [System.IO.File]::WriteAllText((Join-Path $PWD "updates.json"), $json + "`n", [System.Text.UTF8Encoding]::new($false))
+            };
+            const nextContent = `${JSON.stringify(contentObject, null, 2)}\n`;
 
-            git add updates.json
-            git diff --cached --quiet
-            if ($LASTEXITCODE -eq 0) {
-              Write-Host "updates.json already matches the release version"
-              exit 0
-            }
-
-            git commit -m "chore: update release metadata for v$version"
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to commit updates.json on attempt $attempt"
-            }
-
-            git pull --rebase origin main
-            if ($LASTEXITCODE -ne 0) {
-              git rebase --abort
-              continue
+            let existing = null;
+            try {
+              const response = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path,
+                ref: "main"
+              });
+              if (!Array.isArray(response.data)) {
+                existing = response.data;
+              }
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
             }
 
-            git push origin HEAD:main
-            if ($LASTEXITCODE -eq 0) {
-              exit 0
+            if (existing) {
+              const currentContent = Buffer.from(existing.content, "base64").toString("utf8");
+              if (currentContent === nextContent) {
+                core.info("updates.json already matches the release version");
+                return;
+              }
             }
-          }
 
-          throw "Failed to update release metadata on main after 3 attempts"
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,
+              repo,
+              path,
+              branch: "main",
+              message: `chore: update release metadata for v${version}`,
+              content: Buffer.from(nextContent, "utf8").toString("base64"),
+              sha: existing?.sha
+            });
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
