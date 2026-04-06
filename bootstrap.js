@@ -8,6 +8,8 @@ function log(msg) {
 
 function resolveKatexRuntime(scope) {
 	let candidates = [
+		globalThis.ZoteroCopilotKaTeX,
+		globalThis.katex,
 		scope,
 		scope?.default,
 		scope?.katex,
@@ -17,9 +19,7 @@ function resolveKatexRuntime(scope) {
 		scope?.module?.exports?.katex,
 		scope?.exports,
 		scope?.exports?.default,
-		scope?.exports?.katex,
-		globalThis.ZoteroCopilotKaTeX,
-		globalThis.katex
+		scope?.exports?.katex
 	];
 	for (let candidate of candidates) {
 		if (candidate?.renderToString || candidate?.render) {
@@ -30,7 +30,7 @@ function resolveKatexRuntime(scope) {
 }
 
 function install() {
-	log("Installed 0.2.78");
+	log("Installed 0.2.79");
 }
 
 async function startup({ id, version, rootURI }) {
@@ -132,7 +132,7 @@ function onMainWindowUnload({ window }) {
 }
 
 function shutdown() {
-	log("Shutting down 0.2.78");
+	log("Shutting down 0.2.79");
 	ZoteroCopilot.removeFromAllWindows();
 	ZoteroCopilot = undefined;
 	ZoteroCopilotKaTeX = undefined;
@@ -142,5 +142,5 @@ function shutdown() {
 }
 
 function uninstall() {
-	log("Uninstalled 0.2.78");
+	log("Uninstalled 0.2.79");
 }

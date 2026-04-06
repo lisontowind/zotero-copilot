@@ -1801,6 +1801,7 @@ ZoteroCopilot = {
 	},
 
 	createFormulaFallbackNode(doc, raw, displayMode, fallbackReason = "katex-missing") {
+		this.log(`Formula fallback [${displayMode ? "block" : "inline"}]: ${fallbackReason}`);
 		let fallback = doc.createElementNS(this.HTML_NS, displayMode ? "div" : "span");
 		fallback.setAttribute("class", displayMode ? "zc-formula zc-formula-block zc-formula-fallback" : "zc-formula zc-formula-inline zc-formula-fallback");
 		fallback.setAttribute("data-md-formula", raw);
@@ -1911,8 +1912,11 @@ ZoteroCopilot = {
 	},
 
 	resolveKatexRuntime(...scopes) {
-		let candidates = [];
-		for (let scope of [...scopes, globalThis.ZoteroCopilotKaTeX, globalThis.katex]) {
+		let candidates = [
+			globalThis.ZoteroCopilotKaTeX,
+			globalThis.katex
+		];
+		for (let scope of scopes) {
 			candidates.push(
 				scope,
 				scope?.default,
@@ -1943,10 +1947,11 @@ ZoteroCopilot = {
 	ensureKatexRuntime(context = null) {
 		let win = this.getContextWindow(context);
 		let existing = this.resolveKatexRuntime(
+			globalThis.ZoteroCopilotKaTeX,
+			globalThis.katex,
 			win?.ZoteroCopilotKaTeX,
 			win?.katex,
-			globalThis.ZoteroCopilotKaTeX,
-			globalThis.katex
+			win
 		);
 		if (existing) {
 			if (win) {
@@ -2178,21 +2183,6 @@ ZoteroCopilot = {
 
 	parseHTMLToNodes(doc, html) {
 		let source = String(html || "");
-		let range = doc.createRange?.();
-		if (range?.createContextualFragment) {
-			let context = doc.body || doc.documentElement;
-			if (context) {
-				range.selectNodeContents(context);
-			}
-			let fragment = range.createContextualFragment(source);
-			let nodes = [];
-			for (let child of Array.from(fragment.childNodes || [])) {
-				nodes.push(child);
-			}
-			if (nodes.length) {
-				return nodes;
-			}
-		}
 		let DOMParserCtor = doc.defaultView?.DOMParser || globalThis.DOMParser;
 		if (!DOMParserCtor) {
 			throw new Error("DOMParser unavailable");

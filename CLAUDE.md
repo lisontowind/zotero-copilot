@@ -7,7 +7,7 @@ This repository contains a Zotero 8 plugin that adds a standalone Copilot sideba
 Current plugin identity:
 
 - Add-on ID: `zotero-copilot@example.com`
-- Current version: `0.2.77`
+- Current version: `0.2.79`
 - Author: `Lisontowind`
 - GitHub repo: `https://github.com/lisontowind/zotero-copilot`
 - Entry files:
@@ -512,7 +512,7 @@ If continuing work on this repository, the highest-value cleanup would be:
 - `zotero-copilot-0.2.46.xpi` and `zotero-copilot-0.2.47.xpi` are malformed archives, not valid ZIP/XPI packages. They appear to have been produced with the wrong archive format and Zotero reports them as incompatible.
 - Do not build `.xpi` files with `tar` or ad hoc archive commands. XPI must be a ZIP archive.
 - Use `pwsh -File .\\build.ps1` from the repo root for packaging. The script stages only runtime files and writes a validated build to `dist\\zotero-copilot-<version>.xpi`.
-- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.2.77`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
+- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.2.79`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
 - Keep `dist/`, local `.xpi` outputs, and vendor `.tgz` tarballs out of git. `.gitignore` now treats those as local build artifacts.
 - Preserve existing user data migration behavior when touching session storage.
 - Avoid changing storage shape casually; multiple migration paths already exist.
@@ -535,9 +535,9 @@ If continuing work on this repository, the highest-value cleanup would be:
 
 ## Current Status Summary
 
-As of version `0.2.77`:
+As of version `0.2.79`:
 
-- Plugin installs from `dist\\zotero-copilot-0.2.67.xpi` and packaging is done through `build.ps1`
+- Plugin installs from `dist\\zotero-copilot-0.2.79.xpi` and packaging is done through `build.ps1`
 - Preferences pane exists and uses native `select` controls for provider/model configuration
 - Session persistence under one Zotero store item exists
 - Sidebar session actions currently include rename, duplicate, delete, and new chat
@@ -558,6 +558,7 @@ As of version `0.2.77`:
 - Drag/drop context ingestion exists
 - Streaming chat exists
 - Edit / regenerate / stop flows exist
-- Formula rendering is fixed through KaTeX `renderToString(...)` first, with fallback handling retained
+- Formula rendering now prefers a shared global KaTeX runtime and always imports rendered KaTeX HTML through the namespace-safe DOMParser clone path, with fallback handling retained
+- If formulas regress to raw source again, inspect `parseHTMLToNodes(...)`, `cloneHTMLNodeIntoDocument(...)`, `resolveKatexRuntime(...)`, and fallback logs before changing delimiter parsing rules
 - Copying selected markdown should preserve formula delimiters; inline math should copy as `$...$` and block math should copy as `$$...$$` with blank-line separation
 - Sidebar layout currently expects the model selector above the input, left-aligned, with tighter vertical spacing than earlier builds
