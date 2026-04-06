@@ -1,0 +1,13 @@
+pref("extensions.zotero-copilot.llmApiBaseURL", "");
+pref("extensions.zotero-copilot.llmApiKey", "");
+pref("extensions.zotero-copilot.llmModel", "");
+pref("extensions.zotero-copilot.llmRequestJSON", "");
+pref("extensions.zotero-copilot.chatCollectionKey", "");
+pref("extensions.zotero-copilot.chatStoreItemKey", "");
+pref("extensions.zotero-copilot.llmProvidersJSON", "");
+pref("extensions.zotero-copilot.llmProfilesJSON", "");
+pref("extensions.zotero-copilot.activeLLMProfileID", "");
+pref("extensions.zotero-copilot.titleLLMProfileID", "");
+pref("extensions.zotero-copilot.systemPromptsJSON", "");
+pref("extensions.zotero-copilot.activeSystemPromptID", "");
+pref("extensions.zotero-copilot.sidebarOpen", false);

@@ -1,0 +1,1 @@
+zotero-copilot-section = Copilot

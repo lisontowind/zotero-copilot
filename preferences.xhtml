@@ -1,0 +1,137 @@
+<vbox
+	xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+	xmlns:html="http://www.w3.org/1999/xhtml"
+	id="zotero-copilot-prefpane"
+	flex="1"
+	onload="if (window.ZoteroCopilotPreferences) { window.ZoteroCopilotPreferences.init(); }"
+>
+	<html:div class="copilot-pref-root">
+		<html:h2>Zotero Copilot 设置</html:h2>
+		<html:p class="copilot-pref-intro">
+			在这里管理供应商、模型和系统提示词。聊天面板输入框上方可以直接切换模型与系统提示词，也可以随时回到这里继续维护。
+		</html:p>
+
+		<html:section class="copilot-pref-section">
+			<html:h3>供应商</html:h3>
+			<html:div class="copilot-pref-grid">
+				<html:label for="copilot-provider-select">已保存供应商</html:label>
+				<html:select id="copilot-provider-select"></html:select>
+
+				<html:label for="copilot-provider-name">供应商名称</html:label>
+				<html:input id="copilot-provider-name" type="text" placeholder="例如 OpenAI / DeepSeek / OpenRouter" />
+
+				<html:label for="copilot-provider-api-base-url">API Base URL</html:label>
+				<html:input id="copilot-provider-api-base-url" type="url" placeholder="https://api.openai.com/v1" />
+
+				<html:label for="copilot-provider-api-key">API Key</html:label>
+				<html:input id="copilot-provider-api-key" type="password" placeholder="sk-..." />
+
+				<html:label for="copilot-provider-models-path">模型列表路径</html:label>
+				<html:input id="copilot-provider-models-path" type="text" placeholder="/models" />
+
+				<html:label for="copilot-provider-chat-path">对话路径</html:label>
+				<html:input id="copilot-provider-chat-path" type="text" placeholder="/chat/completions" />
+			</html:div>
+
+			<html:div class="copilot-pref-actions">
+				<html:button id="copilot-new-provider" type="button">新建供应商</html:button>
+				<html:button id="copilot-save-provider" type="button">保存供应商</html:button>
+				<html:button id="copilot-delete-provider" type="button">删除供应商</html:button>
+				<html:button id="copilot-fetch-models" type="button">获取模型并添加</html:button>
+			</html:div>
+
+			<html:section class="copilot-pref-subsection">
+				<html:div class="copilot-pref-subsection-head">
+					<html:h3>模型</html:h3>
+					<html:p id="copilot-model-section-summary" class="copilot-pref-helper"></html:p>
+				</html:div>
+				<html:div class="copilot-pref-grid">
+					<html:label for="copilot-model-select">当前供应商的模型</html:label>
+					<html:select id="copilot-model-select"></html:select>
+
+					<html:label for="copilot-model-name">显示名称</html:label>
+					<html:input id="copilot-model-name" type="text" placeholder="例如 GPT-4.1 / DeepSeek Reasoner" />
+
+					<html:label for="copilot-model-id">模型名称</html:label>
+					<html:input id="copilot-model-id" type="text" placeholder="gpt-4.1-mini" />
+
+					<html:label for="copilot-model-request-json" class="copilot-pref-label-top">模型额外 JSON 参数</html:label>
+					<html:textarea
+						id="copilot-model-request-json"
+						rows="6"
+						placeholder='{"temperature":0.2}'></html:textarea>
+				</html:div>
+
+				<html:div class="copilot-pref-actions">
+					<html:button id="copilot-new-model" type="button">新建模型</html:button>
+					<html:button id="copilot-save-model" type="button">保存模型</html:button>
+					<html:button id="copilot-set-active-model" type="button">设为当前模型</html:button>
+					<html:button id="copilot-delete-model" type="button">删除模型</html:button>
+					<html:button id="copilot-test-llm" type="button">测试当前模型</html:button>
+				</html:div>
+			</html:section>
+
+			<html:section class="copilot-pref-subsection">
+				<html:div class="copilot-pref-subsection-head">
+					<html:h3>自动命名</html:h3>
+					<html:p id="copilot-title-model-summary" class="copilot-pref-helper"></html:p>
+				</html:div>
+				<html:div class="copilot-pref-grid">
+					<html:label for="copilot-title-model-select">自动命名模型</html:label>
+					<html:select id="copilot-title-model-select"></html:select>
+				</html:div>
+			</html:section>
+
+			<html:section class="copilot-pref-subsection">
+				<html:div class="copilot-pref-subsection-head">
+					<html:h3>系统提示词</html:h3>
+					<html:p id="copilot-system-prompt-summary" class="copilot-pref-helper"></html:p>
+				</html:div>
+				<html:div class="copilot-pref-grid">
+					<html:label for="copilot-system-prompt-select">已保存提示词</html:label>
+					<html:select id="copilot-system-prompt-select"></html:select>
+
+					<html:label for="copilot-system-prompt-name">提示词名称</html:label>
+					<html:input id="copilot-system-prompt-name" type="text" placeholder="例如 学术助手 / 简洁总结 / 代码解释" />
+
+					<html:label for="copilot-system-prompt-content" class="copilot-pref-label-top">系统提示词内容</html:label>
+					<html:textarea
+						id="copilot-system-prompt-content"
+						rows="8"
+						placeholder="输入发送给模型的 system prompt"></html:textarea>
+				</html:div>
+
+				<html:div class="copilot-pref-actions">
+					<html:button id="copilot-new-system-prompt" type="button">新建提示词</html:button>
+					<html:button id="copilot-save-system-prompt" type="button">保存提示词</html:button>
+					<html:button id="copilot-set-active-system-prompt" type="button">设为当前提示词</html:button>
+					<html:button id="copilot-delete-system-prompt" type="button">删除提示词</html:button>
+				</html:div>
+			</html:section>
+		</html:section>
+
+		<html:div class="copilot-pref-actions copilot-pref-status-row">
+			<html:span id="copilot-status"></html:span>
+		</html:div>
+
+		<html:pre id="copilot-test-output" class="copilot-pref-output"></html:pre>
+
+		<html:div id="copilot-model-picker" class="copilot-pref-dialog" hidden="hidden">
+			<html:div class="copilot-pref-dialog-card">
+				<html:div class="copilot-pref-dialog-top">
+					<html:h3>添加模型</html:h3>
+					<html:button id="copilot-close-model-picker" type="button">Close</html:button>
+				</html:div>
+				<html:p id="copilot-model-picker-summary" class="copilot-pref-helper"></html:p>
+				<html:input id="copilot-model-picker-search" type="search" placeholder="搜索模型..." />
+				<html:div id="copilot-model-picker-empty" class="copilot-pref-helper"></html:div>
+				<html:div id="copilot-model-picker-list" class="copilot-model-picker-list"></html:div>
+				<html:div class="copilot-pref-actions">
+					<html:button id="copilot-add-selected-models" type="button">添加选中模型</html:button>
+					<html:button id="copilot-close-model-picker-footer" type="button">取消</html:button>
+				</html:div>
+			</html:div>
+		</html:div>
+	</html:div>
+	<html:script src="preferences.js"></html:script>
+</vbox>

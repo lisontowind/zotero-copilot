@@ -1,0 +1,91 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read manifest version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath .\manifest.json -Raw | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Validate tag version
+        shell: pwsh
+        run: |
+          $tagVersion = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          if ($tagVersion -ne "${{ steps.version.outputs.version }}") {
+            throw "Tag version $tagVersion does not match manifest version ${{ steps.version.outputs.version }}"
+          }
+
+      - name: Build XPI
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Prepare release asset
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath ".\dist\zotero-copilot-${{ steps.version.outputs.version }}.xpi" -Destination ".\zotero-copilot.xpi" -Force
+
+      - name: Update release metadata
+        shell: pwsh
+        run: |
+          $repo = "${{ github.repository }}"
+          $version = "${{ steps.version.outputs.version }}"
+          $data = @{
+            addons = @{
+              "zotero-copilot@example.com" = @{
+                updates = @(
+                  @{
+                    version = $version
+                    update_link = "https://github.com/$repo/releases/latest/download/zotero-copilot.xpi"
+                    applications = @{
+                      zotero = @{
+                        strict_min_version = "8.0"
+                        strict_max_version = "9.*"
+                      }
+                    }
+                  }
+                )
+              }
+            }
+          }
+          $json = $data | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText((Join-Path $PWD "updates.json"), $json + "`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Commit metadata to main
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add updates.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "updates.json already matches the release version"
+            exit 0
+          }
+          git commit -m "chore: update release metadata for v${{ steps.version.outputs.version }}"
+          git push origin HEAD:main
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: zotero-copilot.xpi

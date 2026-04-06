@@ -1,0 +1,6 @@
+dist/
+*.xpi
+*.log
+*.tgz
+.DS_Store
+.claude/
