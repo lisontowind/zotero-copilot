@@ -18,6 +18,9 @@ ZoteroCopilot = {
 	SOURCE_LIMIT_CHARS: 40000,
 	CONTEXT_LIMIT_CHARS: 120000,
 	MAX_HISTORY_MESSAGES: 20,
+	STREAM_RENDER_INTERVAL_MS: 80,
+	STREAM_RENDER_DEGRADE_THRESHOLD: 16000,
+	STREAM_AUTO_SCROLL_THRESHOLD_PX: 48,
 	HTML_NS: "http://www.w3.org/1999/xhtml",
 	MATHML_NS: "http://www.w3.org/1998/Math/MathML",
 	SVG_NS: "http://www.w3.org/2000/svg",
@@ -933,6 +936,8 @@ ZoteroCopilot = {
 		if (active.streaming?.stopWaiting) {
 			active.streaming.stopWaiting();
 		}
+		this.cancelStreamingRender(state, active.streaming?.contentRender);
+		this.cancelStreamingRender(state, active.streaming?.reasoningRender);
 		if (active.streaming?.node?.isConnected) {
 			active.streaming.node.remove();
 		}
@@ -1084,6 +1089,206 @@ ZoteroCopilot = {
 		for (let node of nodes || []) {
 			el.appendChild(node);
 		}
+	},
+
+	now(window = null) {
+		let perf = window?.performance || globalThis.performance;
+		return typeof perf?.now === "function" ? perf.now() : Date.now();
+	},
+
+	isNearBottom(scroller, threshold = this.STREAM_AUTO_SCROLL_THRESHOLD_PX) {
+		if (!scroller) return true;
+		return Math.max(0, scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= threshold;
+	},
+
+	scrollMessagesToBottom(state, { force = false } = {}) {
+		if (!state?.messages) return;
+		if (!force && !this.isNearBottom(state.messages)) return;
+		state.messages.scrollTop = state.messages.scrollHeight;
+	},
+
+	createStreamingRenderState(rootEl) {
+		return {
+			rootEl,
+			pendingText: "",
+			renderedStable: null,
+			renderedTail: null,
+			lastFlushAt: 0,
+			rafHandle: 0,
+			timerHandle: 0,
+			tailEl: null,
+			degraded: false
+		};
+	},
+
+	cancelStreamingRender(state, renderState) {
+		if (!renderState) return;
+		let win = state?.window;
+		if (renderState.rafHandle) {
+			if (typeof win?.cancelAnimationFrame === "function") {
+				win.cancelAnimationFrame(renderState.rafHandle);
+			}
+			else {
+				win?.clearTimeout?.(renderState.rafHandle);
+			}
+			renderState.rafHandle = 0;
+		}
+		if (renderState.timerHandle) {
+			win?.clearTimeout?.(renderState.timerHandle);
+			renderState.timerHandle = 0;
+		}
+	},
+
+	syncStreamingTail(renderState, tailText) {
+		let text = String(tailText || "");
+		if (renderState.renderedTail === text) return;
+		renderState.renderedTail = text;
+		if (!text) {
+			renderState.tailEl?.remove?.();
+			renderState.tailEl = null;
+			return;
+		}
+		if (!renderState.tailEl || !renderState.tailEl.isConnected) {
+			renderState.tailEl = this.html(renderState.rootEl.ownerDocument, "div", {
+				className: "zc-stream-tail"
+			});
+			renderState.rootEl.appendChild(renderState.tailEl);
+		}
+		renderState.tailEl.textContent = text;
+	},
+
+	findStreamingStableBoundary(text) {
+		let source = String(text || "").replace(/\r\n?/g, "\n");
+		if (!source) return 0;
+		let lines = source.split("\n");
+		let offset = 0;
+		let lastSafe = 0;
+		let inFence = false;
+		let inMathBlock = false;
+		let fenceStart = 0;
+		let mathStart = 0;
+		for (let i = 0; i < lines.length; i++) {
+			let line = lines[i];
+			let lineStart = offset;
+			let lineEnd = lineStart + line.length + (i < lines.length - 1 ? 1 : 0);
+			let trimmed = line.trim();
+			if (/^```/.test(trimmed)) {
+				if (!inFence) {
+					inFence = true;
+					fenceStart = lineStart;
+				}
+				else {
+					inFence = false;
+					lastSafe = lineEnd;
+				}
+			}
+			else if (/^\$\$\s*$/.test(trimmed)) {
+				if (!inMathBlock) {
+					inMathBlock = true;
+					mathStart = lineStart;
+				}
+				else {
+					inMathBlock = false;
+					lastSafe = lineEnd;
+				}
+			}
+			else if (!inFence && !inMathBlock) {
+				if (!trimmed) {
+					lastSafe = lineEnd;
+				}
+				else if (/^(#{1,6}\s|>\s?|[-*+]\s|\d+\.\s)/.test(line)) {
+					lastSafe = lineEnd;
+				}
+			}
+			offset = lineEnd;
+		}
+		if (inFence) {
+			lastSafe = Math.min(lastSafe || fenceStart, fenceStart);
+		}
+		if (inMathBlock) {
+			lastSafe = Math.min(lastSafe || mathStart, mathStart);
+		}
+		if (!inFence && !inMathBlock && source.length <= this.STREAM_RENDER_DEGRADE_THRESHOLD) {
+			return source.length;
+		}
+		return Math.max(0, Math.min(lastSafe, source.length));
+	},
+
+	splitStreamingMarkdown(text, { forceMarkdown = false } = {}) {
+		let source = String(text || "");
+		if (!source) return { stableText: "", tailText: "" };
+		if (forceMarkdown) {
+			return { stableText: source, tailText: "" };
+		}
+		if (source.length > this.STREAM_RENDER_DEGRADE_THRESHOLD) {
+			return { stableText: "", tailText: source, degraded: true };
+		}
+		let boundary = this.findStreamingStableBoundary(source);
+		return {
+			stableText: source.slice(0, boundary),
+			tailText: source.slice(boundary)
+		};
+	},
+
+	flushStreamingRender(state, renderState, { forceMarkdown = false, forceScroll = false } = {}) {
+		if (!renderState?.rootEl) return;
+		let shouldStickBottom = forceScroll || this.isNearBottom(state?.messages);
+		this.cancelStreamingRender(state, renderState);
+		let nextText = String(renderState.pendingText || "");
+		let split = this.splitStreamingMarkdown(nextText, { forceMarkdown });
+		if (split.degraded) {
+			renderState.degraded = true;
+		}
+		if (renderState.renderedStable !== split.stableText) {
+			this.setMarkdownContent(renderState.rootEl, split.stableText);
+			renderState.tailEl = null;
+			renderState.renderedStable = split.stableText;
+			renderState.renderedTail = null;
+		}
+		this.syncStreamingTail(renderState, split.tailText);
+		renderState.lastFlushAt = this.now(state?.window);
+		this.scrollMessagesToBottom(state, { force: shouldStickBottom });
+	},
+
+	scheduleStreamingRender(state, renderState) {
+		if (!renderState?.rootEl) return;
+		if (renderState.rafHandle || renderState.timerHandle) return;
+		let win = state?.window;
+		let now = this.now(win);
+		let wait = Math.max(0, this.STREAM_RENDER_INTERVAL_MS - (now - renderState.lastFlushAt));
+		let queueFlush = () => {
+			if (typeof win?.requestAnimationFrame === "function") {
+				renderState.rafHandle = win.requestAnimationFrame(() => {
+					renderState.rafHandle = 0;
+					this.flushStreamingRender(state, renderState);
+				});
+				return;
+			}
+			renderState.timerHandle = win?.setTimeout?.(() => {
+				renderState.timerHandle = 0;
+				this.flushStreamingRender(state, renderState);
+			}, 0) || 0;
+		};
+		if (wait > 0) {
+			renderState.timerHandle = win?.setTimeout?.(() => {
+				renderState.timerHandle = 0;
+				queueFlush();
+			}, wait) || 0;
+			return;
+		}
+		queueFlush();
+	},
+
+	updateStreamingText(state, renderState, nextText) {
+		if (!renderState) return;
+		renderState.pendingText = String(nextText || "");
+		this.scheduleStreamingRender(state, renderState);
+	},
+
+	finalizeStreamingText(state, renderState, nextText, { forceScroll = false } = {}) {
+		if (!renderState) return;
+		renderState.pendingText = String(nextText || "");
+		this.flushStreamingRender(state, renderState, { forceMarkdown: true, forceScroll });
 	},
 
 	buildMarkdownNodes(doc, markdownText, formulas = null) {
@@ -2245,6 +2450,7 @@ ZoteroCopilot = {
 			.zc-markdown pre { overflow:auto; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, #000 4%); border:1px solid var(--zc-soft-border); }
 			.zc-markdown pre code { display:block; padding:0; border:0; background:transparent; }
 			.zc-markdown a { color:inherit; text-decoration:underline; text-underline-offset:2px; }
+			.zc-stream-tail { white-space:pre-wrap; }
 			.zc-formula-inline { display:inline-block; vertical-align:middle; max-width:100%; padding:0 1px; }
 			.zc-formula-block { display:block; overflow-x:auto; margin:8px 0; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, rgba(64,101,161,0.04)); border:1px solid var(--zc-soft-border); }
 			.zc-formula-fallback { font-family:Consolas, "SFMono-Regular", monospace; white-space:pre-wrap; }
@@ -2609,6 +2815,7 @@ ZoteroCopilot = {
 		streaming.node.insertBefore(reasoningWrap, streaming.bodyEl);
 		streaming.reasoningWrapEl = reasoningWrap;
 		streaming.reasoningBodyEl = reasoningBody;
+		streaming.reasoningRender = this.createStreamingRenderState(reasoningBody);
 	},
 
 	appendStreamingAssistantMessage(state) {
@@ -2628,8 +2835,10 @@ ZoteroCopilot = {
 			message,
 			node,
 			bodyEl,
+			contentRender: this.createStreamingRenderState(bodyEl),
 			reasoningWrapEl: node.querySelector(".zc-message-reasoning"),
 			reasoningBodyEl: node.querySelector(".zc-message-reasoning-body"),
+			reasoningRender: node.querySelector(".zc-message-reasoning-body") ? this.createStreamingRenderState(node.querySelector(".zc-message-reasoning-body")) : null,
 			stopWaiting: () => {
 				if (waitTimer) {
 					state.window.clearInterval(waitTimer);
@@ -3018,11 +3227,10 @@ ZoteroCopilot = {
 						streaming.stopWaiting();
 						this.ensureReasoningNode(streaming);
 						streaming.message.reasoning += text;
-						if (streaming.reasoningBodyEl) {
-							this.setMarkdownContent(streaming.reasoningBodyEl, streaming.message.reasoning);
+						this.updateStreamingText(state, streaming.reasoningRender, streaming.message.reasoning);
+						if (!streaming.message.content) {
+							this.finalizeStreamingText(state, streaming.contentRender, "");
 						}
-						streaming.bodyEl.textContent = "";
-						state.messages.scrollTop = state.messages.scrollHeight;
 						return;
 					}
 					streaming.stopWaiting();
@@ -3031,8 +3239,7 @@ ZoteroCopilot = {
 					if (streaming.reasoningWrapEl) {
 						streaming.reasoningWrapEl.removeAttribute("open");
 					}
-					this.setMarkdownContent(streaming.bodyEl, streaming.message.content || "。。。");
-					state.messages.scrollTop = state.messages.scrollHeight;
+					this.updateStreamingText(state, streaming.contentRender, streaming.message.content || "。。。");
 				}
 			});
 			if (state.activeRequestID !== requestID || state.stopRequested) {
@@ -3040,7 +3247,10 @@ ZoteroCopilot = {
 			}
 			streaming.stopWaiting();
 			streaming.message.content = reply;
-			this.setMarkdownContent(streaming.bodyEl, reply);
+			this.finalizeStreamingText(state, streaming.contentRender, reply, { forceScroll: true });
+			if (streaming.reasoningRender) {
+				this.finalizeStreamingText(state, streaming.reasoningRender, streaming.message.reasoning || "");
+			}
 			session.data.messages.push(streaming.message);
 			session.data.updatedAt = new Date().toISOString();
 			await this.saveSession(session);
@@ -3056,6 +3266,8 @@ ZoteroCopilot = {
 				return;
 			}
 			streaming.stopWaiting();
+			this.cancelStreamingRender(state, streaming.contentRender);
+			this.cancelStreamingRender(state, streaming.reasoningRender);
 			streaming.node.remove();
 			if (e?.name === "AbortError") {
 				if (streaming.message.reasoning || streaming.message.content) {

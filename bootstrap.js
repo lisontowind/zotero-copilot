@@ -30,7 +30,7 @@ function resolveKatexRuntime(scope) {
 }
 
 function install() {
-	log("Installed 0.2.77");
+	log("Installed 0.2.78");
 }
 
 async function startup({ id, version, rootURI }) {
@@ -132,7 +132,7 @@ function onMainWindowUnload({ window }) {
 }
 
 function shutdown() {
-	log("Shutting down 0.2.77");
+	log("Shutting down 0.2.78");
 	ZoteroCopilot.removeFromAllWindows();
 	ZoteroCopilot = undefined;
 	ZoteroCopilotKaTeX = undefined;
@@ -142,5 +142,5 @@ function shutdown() {
 }
 
 function uninstall() {
-	log("Uninstalled 0.2.77");
+	log("Uninstalled 0.2.78");
 }

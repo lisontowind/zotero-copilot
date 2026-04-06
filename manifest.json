@@ -1,7 +1,7 @@
 {
 	"manifest_version": 2,
 	"name": "Zotero Copilot",
-  "version": "0.2.77",
+  "version": "0.2.78",
 	"description": "Chat with Zotero items in a Copilot view inside the right item pane and persist synced conversations.",
 	"author": "Lisontowind",
 	"homepage_url": "https://github.com/lisontowind/zotero-copilot",
