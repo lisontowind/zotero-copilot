@@ -30,7 +30,7 @@ function resolveKatexRuntime(scope) {
 }
 
 function install() {
-	log("Installed 0.2.79");
+	log("Installed 0.3.10");
 }
 
 async function startup({ id, version, rootURI }) {
@@ -117,6 +117,9 @@ async function startup({ id, version, rootURI }) {
 		Zotero.logError(e);
 	}
 
+	Services.scriptloader.loadSubScript(rootURI + "markdown/core.js");
+	Services.scriptloader.loadSubScript(rootURI + "markdown/render.js");
+	Services.scriptloader.loadSubScript(rootURI + "markdown/copy.js");
 	Services.scriptloader.loadSubScript(rootURI + "copilot.js");
 	ZoteroCopilot.init({ id, version, rootURI });
 	ZoteroCopilot.addToAllWindows();
@@ -132,7 +135,7 @@ function onMainWindowUnload({ window }) {
 }
 
 function shutdown() {
-	log("Shutting down 0.2.79");
+	log("Shutting down 0.3.10");
 	ZoteroCopilot.removeFromAllWindows();
 	ZoteroCopilot = undefined;
 	ZoteroCopilotKaTeX = undefined;
@@ -142,5 +145,5 @@ function shutdown() {
 }
 
 function uninstall() {
-	log("Uninstalled 0.2.79");
+	log("Uninstalled 0.3.10");
 }

@@ -78,6 +78,7 @@ ZoteroCopilot = {
 			doc,
 			mount,
 			currentItem: this.getSelectedItem(window),
+			rawMarkdownMessageIDs: new Set(),
 			isOpen: false,
 			isSessionMenuOpen: false,
 			isProfileMenuOpen: false,
@@ -437,6 +438,7 @@ ZoteroCopilot = {
 
 		return {
 			root,
+			messagesWrap,
 			sessionSelect,
 			renameButton,
 			newChatButton,
@@ -461,6 +463,7 @@ ZoteroCopilot = {
 			regenerateButton,
 			stopButton,
 			composerSecondaryActions,
+			composer,
 			sendButton,
 			sendLabel,
 			composerProfileRow
@@ -554,8 +557,8 @@ ZoteroCopilot = {
 		};
 		state.onResizePointerMove = (event) => {
 			if (state.resizePointerId !== event.pointerId) return;
-			let nextHeight = Math.max(96, state.resizeStartHeight + (state.resizeStartY - event.clientY));
-			state.input.style.height = `${nextHeight}px`;
+			let nextHeight = state.resizeStartHeight + (state.resizeStartY - event.clientY);
+			this.setComposerInputHeight(state, nextHeight);
 		};
 		state.onResizePointerUp = (event) => {
 			if (state.resizePointerId !== event.pointerId) return;
@@ -586,6 +589,8 @@ ZoteroCopilot = {
 		state.messages.addEventListener("click", state.onMessagesClick);
 		state.onMessagesCopy = (event) => this.handleMessagesCopy(state, event);
 		state.messages.addEventListener("copy", state.onMessagesCopy);
+		state.onDocumentCopy = (event) => this.handleMessagesCopy(state, event);
+		state.doc.addEventListener("copy", state.onDocumentCopy, true);
 		state.onComposerSourcesClick = (event) => {
 			let remove = event.target?.closest?.(".zc-chip-remove");
 			if (remove) return;
@@ -645,6 +650,7 @@ ZoteroCopilot = {
 		};
 		state.window.addEventListener("blur", state.onWindowBlur, true);
 		this.updateContextButtonVisibility(state);
+		this.setComposerInputHeight(state, state.input.offsetHeight || 96);
 	},
 
 	detachViewListeners(state) {
@@ -671,6 +677,7 @@ ZoteroCopilot = {
 		state.composerResizeBar?.removeEventListener("pointercancel", state.onResizePointerUp);
 		state.messages?.removeEventListener("click", state.onMessagesClick);
 		state.messages?.removeEventListener("copy", state.onMessagesCopy);
+		state.doc?.removeEventListener("copy", state.onDocumentCopy, true);
 		state.composerSources?.removeEventListener("click", state.onComposerSourcesClick);
 		state.window?.removeEventListener("focus", state.onWindowFocus, true);
 		state.doc?.removeEventListener("click", state.onDocumentClick);
@@ -678,6 +685,26 @@ ZoteroCopilot = {
 		for (let [name, fn] of [["dragenter", state.onDragEnter], ["dragover", state.onDragOver], ["dragleave", state.onDragLeave], ["drop", state.onDrop]]) {
 			state.input?.removeEventListener(name, fn);
 		}
+	},
+
+	getMaximumComposerInputHeight(state) {
+		let minInputHeight = 96;
+		let minMessagesHeight = 180;
+		let inputHeight = state?.input?.offsetHeight || minInputHeight;
+		let messagesHeight = state?.messagesWrap?.clientHeight || 0;
+		let expandable = Math.max(0, messagesHeight - minMessagesHeight);
+		let rootHeight = state?.root?.clientHeight || 0;
+		let viewportCap = rootHeight ? Math.max(minInputHeight, Math.floor(rootHeight * 0.45)) : 320;
+		return Math.max(minInputHeight, Math.min(inputHeight + expandable, viewportCap));
+	},
+
+	setComposerInputHeight(state, nextHeight) {
+		if (!state?.input) return;
+		let minInputHeight = 96;
+		let maxInputHeight = this.getMaximumComposerInputHeight(state);
+		let resolved = Math.max(minInputHeight, Math.min(maxInputHeight, Math.round(nextHeight || minInputHeight)));
+		state.input.style.height = `${resolved}px`;
+		state.input.style.overflowY = "auto";
 	},
 
 	getSelectedItem(window) {
@@ -712,6 +739,7 @@ ZoteroCopilot = {
 			this.renderProfileMenu(state);
 			this.renderSessionMenu(state);
 			this.updateContextButtonVisibility(state);
+			this.setComposerInputHeight(state, state.input?.offsetHeight || 96);
 		}
 	},
 
@@ -1063,11 +1091,20 @@ ZoteroCopilot = {
 		}
 		try {
 			el.classList.remove("zc-markdown-fallback");
+			try {
+				this.setRenderedHTML(el, this.renderMarkdownHTML(source));
+				return;
+			}
+			catch (htmlError) {
+				Zotero.logError?.(htmlError);
+				this.log(`Markdown HTML render fallback: ${htmlError?.message || htmlError}`);
+			}
 			let nodes = this.buildMarkdownNodes(el.ownerDocument, source);
-			this.postProcessFormulaNodes(el.ownerDocument, nodes);
 			this.replaceNodeChildren(el, nodes);
 		}
-		catch (_e) {
+		catch (e) {
+			Zotero.logError?.(e);
+			this.log(`Markdown render fallback: ${e?.message || e}`);
 			el.classList.add("zc-markdown-fallback");
 			this.replaceNodeChildren(el, [el.ownerDocument.createTextNode(source)]);
 		}
@@ -1079,7 +1116,19 @@ ZoteroCopilot = {
 		for (let node of this.parseHTMLToNodes(doc, html)) {
 			fragment.appendChild(node);
 		}
+		if (this.shouldPreservePlainLineBreaks(fragment, html)) {
+			throw new Error("Rendered HTML collapsed plain line breaks");
+		}
 		this.replaceNodeChildren(el, Array.from(fragment.childNodes || []));
+	},
+
+	shouldPreservePlainLineBreaks(fragment, html) {
+		let source = String(html || "");
+		if (!/<(p|ul|ol|li|blockquote|pre|h[1-6]|table|hr|br)\b/i.test(source)) {
+			return false;
+		}
+		let textContent = Array.from(fragment.childNodes || []).map((node) => node.textContent || "").join("");
+		return !!textContent && !/[\n\r]/.test(textContent) && /<(p|br|li|blockquote|pre|h[1-6])\b/i.test(source);
 	},
 
 	replaceNodeChildren(el, nodes) {
@@ -1296,269 +1345,478 @@ ZoteroCopilot = {
 		let tokenized = Array.isArray(formulas)
 			? { text: normalizedText, formulas }
 			: this.tokenizeFormulaPlaceholders(normalizedText);
-		let text = tokenized.text;
-		let lines = text.split("\n");
-		let nodes = [];
-		let i = 0;
-		let isBlank = (line) => !String(line || "").trim();
-		let isCodeFence = (line) => /^```/.test(line);
-		let isHeading = (line) => /^(#{1,6})\s+.+$/.test(line);
-		let isBlockquote = (line) => /^\s*>\s?/.test(line);
-		let isList = (line) => /^(\s*)([-*+]|\d+\.)\s+/.test(line);
-		let isDisplayFormula = (line) => /^\s*@@MATHBLOCK\d+@@\s*$/.test(line);
-
-		while (i < lines.length) {
-			let line = lines[i];
-			if (isBlank(line)) {
-				i += 1;
-				continue;
-			}
-
-			if (isCodeFence(line)) {
-				let match = line.match(/^```([^\n`]*)/);
-				let lang = String(match?.[1] || "").trim();
-				let codeLines = [];
-				i += 1;
-				while (i < lines.length && !/^```/.test(lines[i])) {
-					codeLines.push(lines[i]);
-					i += 1;
-				}
-				if (i < lines.length && /^```/.test(lines[i])) i += 1;
-				let pre = doc.createElementNS(this.HTML_NS, "pre");
-				let code = doc.createElementNS(this.HTML_NS, "code");
-				if (lang) code.setAttribute("data-language", lang);
-				code.textContent = codeLines.join("\n");
-				pre.appendChild(code);
-				nodes.push(pre);
-				continue;
-			}
-
-			if (isDisplayFormula(line)) {
-				let parsed = this.parseDisplayFormulaBlock(lines, i, tokenized.formulas);
-				if (parsed) {
-					nodes.push(this.buildFormulaNode(doc, parsed.expr, true, parsed.openDelimiter, parsed.closeDelimiter));
-					i = parsed.nextIndex;
-					continue;
-				}
-			}
-
-			let headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
-			if (headingMatch) {
-				let level = headingMatch[1].length;
-				let heading = doc.createElementNS(this.HTML_NS, `h${level}`);
-				this.appendInlineMarkdownNodes(doc, heading, headingMatch[2], tokenized.formulas);
-				nodes.push(heading);
-				i += 1;
-				continue;
-			}
-
-			if (isBlockquote(line)) {
-				let quoteLines = [];
-				while (i < lines.length && (isBlockquote(lines[i]) || isBlank(lines[i]))) {
-					quoteLines.push(lines[i].replace(/^\s*>\s?/, ""));
-					i += 1;
-				}
-				let blockquote = doc.createElementNS(this.HTML_NS, "blockquote");
-				for (let child of this.buildMarkdownNodes(doc, quoteLines.join("\n"), tokenized.formulas)) {
-					blockquote.appendChild(child);
-				}
-				nodes.push(blockquote);
-				continue;
-			}
-
-			if (isList(line)) {
-				let parsed = this.parseListBlock(doc, lines, i, tokenized.formulas);
-				nodes.push(parsed.node);
-				i = parsed.nextIndex;
-				continue;
-			}
-
-			let paraLines = [];
-			while (i < lines.length && !isBlank(lines[i]) && !isCodeFence(lines[i]) && !isHeading(lines[i]) && !isBlockquote(lines[i]) && !isList(lines[i]) && !isDisplayFormula(lines[i])) {
-				paraLines.push(lines[i]);
-				i += 1;
-			}
-			if (!paraLines.length) {
-				paraLines.push(line);
-				i += 1;
-			}
-			let p = doc.createElementNS(this.HTML_NS, "p");
-			this.appendInlineMarkdownNodes(doc, p, paraLines.join("\n"), tokenized.formulas);
-			nodes.push(p);
-		}
-
-		return nodes;
+		let tokens = this.repairMarkdownTokenTree(this.lexMarkdownTokens(tokenized.text));
+		return this.renderMarkdownTokens(doc, tokens, tokenized.formulas);
 	},
 
-	parseDisplayFormulaBlock(lines, startIndex, formulas = []) {
-		let line = String(lines[startIndex] || "");
-		let tokenMatch = line.match(/^\s*@@MATHBLOCK(\d+)@@\s*$/);
-		if (tokenMatch) {
-			let formula = formulas[parseInt(tokenMatch[1], 10)];
-			if (!formula) return null;
-			return {
-				expr: formula.expr,
-				openDelimiter: formula.openDelimiter,
-				closeDelimiter: formula.closeDelimiter,
-				nextIndex: startIndex + 1
-			};
+	lexMarkdownTokens(markdownText) {
+		let marked = this.getMarkedRenderer();
+		let source = String(markdownText || "");
+		let options = {
+			async: false,
+			gfm: true,
+			breaks: false
+		};
+		if (typeof marked?.lexer === "function") {
+			return marked.lexer(source, options);
 		}
-		if (/^\s*\$\$\s*$/.test(line)) {
-			let exprLines = [];
-			let i = startIndex + 1;
-			while (i < lines.length && !/^\s*\$\$\s*$/.test(lines[i])) {
-				exprLines.push(lines[i]);
-				i += 1;
+		if (typeof marked?.Lexer?.lex === "function") {
+			return marked.Lexer.lex(source, options);
+		}
+		throw new Error("Marked lexer unavailable");
+	},
+
+	repairMarkdownTokenTree(tokens) {
+		let repaired = [];
+		for (let token of tokens || []) {
+			for (let nextToken of this.repairMarkdownToken(token)) {
+				repaired.push(nextToken);
 			}
-			if (i < lines.length) {
+		}
+		return repaired;
+	},
+
+	repairMarkdownToken(token) {
+		if (!token || typeof token !== "object") return token ? [token] : [];
+		let repaired = { ...token };
+		if (Array.isArray(token.tokens)) {
+			repaired.tokens = this.tokenHasInlineChildren(token)
+				? this.repairInlineTokenArray(token.tokens)
+				: this.repairMarkdownTokenTree(token.tokens);
+		}
+		if (Array.isArray(token.items)) {
+			repaired.items = token.items.map((item) => {
+				let nextItem = { ...item };
+				if (Array.isArray(item?.tokens)) {
+					nextItem.tokens = this.repairMarkdownTokenTree(item.tokens);
+				}
+				return nextItem;
+			});
+		}
+		if (Array.isArray(token.header)) {
+			repaired.header = token.header.map((cell) => this.repairMarkdownTableCellToken(cell));
+		}
+		if (Array.isArray(token.rows)) {
+			repaired.rows = token.rows.map((row) => Array.from(row || []).map((cell) => this.repairMarkdownTableCellToken(cell)));
+		}
+		return [repaired];
+	},
+
+	repairMarkdownTableCellToken(cell) {
+		if (!cell || typeof cell !== "object") return cell;
+		let repaired = { ...cell };
+		if (Array.isArray(cell.tokens)) {
+			repaired.tokens = this.repairInlineTokenArray(cell.tokens);
+		}
+		return repaired;
+	},
+
+	tokenHasInlineChildren(token) {
+		let type = String(token?.type || "").toLowerCase();
+		return ["paragraph", "text", "heading", "strong", "em", "del", "link"].includes(type);
+	},
+
+	repairInlineTokenArray(tokens) {
+		let repaired = [];
+		for (let token of tokens || []) {
+			for (let nextToken of this.repairInlineToken(token)) {
+				repaired.push(nextToken);
+			}
+		}
+		return repaired;
+	},
+
+	repairInlineToken(token) {
+		if (!token || typeof token !== "object") return token ? [token] : [];
+		let repaired = { ...token };
+		if (Array.isArray(token.tokens)) {
+			repaired.tokens = this.repairInlineTokenArray(token.tokens);
+		}
+		if (token.type === "text" && !Array.isArray(token.tokens) && typeof token.text === "string") {
+			return this.repairLooseStrongTextToken(repaired);
+		}
+		return [repaired];
+	},
+
+	repairLooseStrongTextToken(token) {
+		let text = String(token?.text || "");
+		if (!text || (!text.includes("**") && !text.includes("__"))) {
+			return [token];
+		}
+		let tokens = [];
+		let cursor = 0;
+		while (cursor < text.length) {
+			let match = this.findNextLooseStrongToken(text, cursor);
+			if (!match) {
+				let tail = text.slice(cursor);
+				if (tail) {
+					tokens.push({
+						type: "text",
+						raw: tail,
+						text: tail,
+						escaped: false
+					});
+				}
+				break;
+			}
+			if (match.start > cursor) {
+				let leading = text.slice(cursor, match.start);
+				tokens.push({
+					type: "text",
+					raw: leading,
+					text: leading,
+					escaped: false
+				});
+			}
+			let innerText = match.content;
+			tokens.push({
+				type: "strong",
+				raw: match.raw,
+				text: innerText,
+				tokens: this.repairInlineTokenArray([{
+					type: "text",
+					raw: innerText,
+					text: innerText,
+					escaped: false
+				}])
+			});
+			cursor = match.end;
+		}
+		return tokens.length ? tokens : [token];
+	},
+
+	findNextLooseStrongToken(text, startIndex = 0) {
+		let source = String(text || "");
+		for (let i = Math.max(0, startIndex); i < source.length - 3; i++) {
+			let delimiter = source.slice(i, i + 2);
+			if ((delimiter !== "**" && delimiter !== "__") || source[i - 1] === "\\" || source[i + 2] === delimiter[0]) {
+				continue;
+			}
+			for (let j = i + 2; j < source.length - 1; j++) {
+				if (source[j] === "\\") {
+					j += 1;
+					continue;
+				}
+				if (source.slice(j, j + 2) !== delimiter || source[j + 2] === delimiter[0]) {
+					continue;
+				}
+				let content = source.slice(i + 2, j);
+				if (!content || content.includes("\n")) {
+					break;
+				}
 				return {
-					expr: exprLines.join("\n"),
-					openDelimiter: "$$",
-					closeDelimiter: "$$",
-					nextIndex: i + 1
+					start: i,
+					end: j + 2,
+					raw: source.slice(i, j + 2),
+					content
 				};
 			}
-			return null;
-		}
-		let singleDollar = line.match(/^\s*\$\$([\s\S]+?)\$\$\s*$/);
-		if (singleDollar) {
-			return {
-				expr: singleDollar[1],
-				openDelimiter: "$$",
-				closeDelimiter: "$$",
-				nextIndex: startIndex + 1
-			};
-		}
-		if (/^\s*\\\[\s*$/.test(line)) {
-			let exprLines = [];
-			let i = startIndex + 1;
-			while (i < lines.length && !/^\s*\\\]\s*$/.test(lines[i])) {
-				exprLines.push(lines[i]);
-				i += 1;
-			}
-			if (i < lines.length) {
-				return {
-					expr: exprLines.join("\n"),
-					openDelimiter: "\\[",
-					closeDelimiter: "\\]",
-					nextIndex: i + 1
-				};
-			}
-			return null;
-		}
-		let singleBracket = line.match(/^\s*\\\[([\s\S]+?)\\\]\s*$/);
-		if (singleBracket) {
-			return {
-				expr: singleBracket[1],
-				openDelimiter: "\\[",
-				closeDelimiter: "\\]",
-				nextIndex: startIndex + 1
-			};
 		}
 		return null;
 	},
 
-	parseListBlock(doc, lines, startIndex, formulas = []) {
-		let firstMatch = String(lines[startIndex] || "").match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
-		let ordered = /\d+\./.test(firstMatch?.[2] || "");
-		let list = doc.createElementNS(this.HTML_NS, ordered ? "ol" : "ul");
-		let i = startIndex;
-		while (i < lines.length) {
-			let line = String(lines[i] || "");
-			let match = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
-			if (!match || /\d+\./.test(match[2]) !== ordered) break;
-			let itemLines = [match[3]];
-			i += 1;
-			while (i < lines.length) {
-				let next = String(lines[i] || "");
-				if (!next.trim()) {
-					itemLines.push("");
-					i += 1;
-					continue;
-				}
-				if (/^(\s*)([-*+]|\d+\.)\s+/.test(next)) break;
-				if (/^\s{2,}/.test(next)) {
-					itemLines.push(next.replace(/^\s{2,}/, ""));
-					i += 1;
-					continue;
-				}
-				break;
-			}
-			let li = doc.createElementNS(this.HTML_NS, "li");
-			for (let child of this.buildMarkdownNodes(doc, itemLines.join("\n"), formulas)) {
-				li.appendChild(child);
-			}
-			if (!li.childNodes.length) {
-				this.appendInlineMarkdownNodes(doc, li, match[3], formulas);
-			}
-			list.appendChild(li);
-			while (i < lines.length && !String(lines[i] || "").trim()) {
-				i += 1;
+	renderMarkdownTokens(doc, tokens, formulas = []) {
+		let nodes = [];
+		for (let token of tokens || []) {
+			for (let node of this.renderMarkdownToken(doc, token, formulas)) {
+				nodes.push(node);
 			}
 		}
-		return { node: list, nextIndex: i };
+		return nodes;
 	},
 
-	appendInlineMarkdownNodes(doc, parent, text, formulas = []) {
-		let parts = String(text || "").split("\n");
-		parts.forEach((part, index) => {
-			for (let node of this.buildInlineMarkdownNodes(doc, part, formulas)) {
-				parent.appendChild(node);
+	renderMarkdownToken(doc, token, formulas = []) {
+		if (!token) return [];
+		let raw = String(token.raw || "");
+		let formulaMatch = this.matchFormulaPlaceholderSource(raw, formulas);
+		if (formulaMatch?.displayMode) {
+			return [this.buildFormulaNode(doc, formulaMatch.expr, true, formulaMatch.openDelimiter, formulaMatch.closeDelimiter)];
+		}
+		switch (token.type) {
+			case "space":
+				return [];
+			case "paragraph":
+			case "text": {
+				let p = doc.createElementNS(this.HTML_NS, "p");
+				for (let child of this.renderInlineMarkdownTokens(doc, token.tokens || [], formulas, token.text || raw)) {
+					p.appendChild(child);
+				}
+				this.setMarkdownSourceAttribute(p, raw, formulas);
+				return [p];
 			}
-			if (index < parts.length - 1) {
-				parent.appendChild(doc.createElementNS(this.HTML_NS, "br"));
+			case "heading": {
+				let level = Math.max(1, Math.min(6, parseInt(token.depth || 1, 10) || 1));
+				let heading = doc.createElementNS(this.HTML_NS, `h${level}`);
+				for (let child of this.renderInlineMarkdownTokens(doc, token.tokens || [], formulas, token.text || raw)) {
+					heading.appendChild(child);
+				}
+				this.setMarkdownSourceAttribute(heading, raw, formulas);
+				return [heading];
 			}
-		});
+			case "code": {
+				let pre = doc.createElementNS(this.HTML_NS, "pre");
+				let code = doc.createElementNS(this.HTML_NS, "code");
+				if (token.lang) code.setAttribute("data-language", String(token.lang).trim());
+				code.textContent = token.text || "";
+				pre.appendChild(code);
+				this.setMarkdownSourceAttribute(pre, raw, formulas);
+				return [pre];
+			}
+			case "blockquote": {
+				let blockquote = doc.createElementNS(this.HTML_NS, "blockquote");
+				for (let child of this.renderMarkdownTokens(doc, token.tokens || [], formulas)) {
+					blockquote.appendChild(child);
+				}
+				this.setMarkdownSourceAttribute(blockquote, raw, formulas);
+				return [blockquote];
+			}
+			case "list": {
+				let list = doc.createElementNS(this.HTML_NS, token.ordered ? "ol" : "ul");
+				if (token.ordered && token.start && token.start !== 1) {
+					list.setAttribute("start", String(token.start));
+				}
+				for (let item of token.items || []) {
+					list.appendChild(this.renderMarkdownListItem(doc, item, formulas));
+				}
+				this.setMarkdownSourceAttribute(list, raw, formulas);
+				return [list];
+			}
+			case "hr": {
+				let hr = doc.createElementNS(this.HTML_NS, "hr");
+				this.setMarkdownSourceAttribute(hr, raw, formulas);
+				return [hr];
+			}
+			case "table":
+				return [this.renderMarkdownTable(doc, token, formulas)];
+			case "html": {
+				let fallback = doc.createElementNS(this.HTML_NS, "p");
+				fallback.textContent = token.text || raw;
+				this.setMarkdownSourceAttribute(fallback, raw, formulas);
+				return [fallback];
+			}
+			default: {
+				if (Array.isArray(token.tokens) && token.tokens.length) {
+					let wrapper = doc.createElementNS(this.HTML_NS, "div");
+					for (let child of this.renderMarkdownTokens(doc, token.tokens, formulas)) {
+						wrapper.appendChild(child);
+					}
+					this.setMarkdownSourceAttribute(wrapper, raw, formulas);
+					return [wrapper];
+				}
+				if (token.text || raw) {
+					let p = doc.createElementNS(this.HTML_NS, "p");
+					for (let child of this.buildTextNodesWithFormulaPlaceholders(doc, token.text || raw, formulas)) {
+						p.appendChild(child);
+					}
+					this.setMarkdownSourceAttribute(p, raw || token.text, formulas);
+					return [p];
+				}
+				return [];
+			}
+		}
 	},
 
-	buildInlineMarkdownNodes(doc, text, formulas = []) {
-		let source = String(text || "");
+	renderMarkdownListItem(doc, item, formulas = []) {
+		let li = doc.createElementNS(this.HTML_NS, "li");
+		if (item?.task) {
+			let checkbox = doc.createElementNS(this.HTML_NS, "input");
+			checkbox.setAttribute("type", "checkbox");
+			checkbox.setAttribute("disabled", "disabled");
+			if (item.checked) checkbox.setAttribute("checked", "checked");
+			li.appendChild(checkbox);
+			li.appendChild(doc.createTextNode(" "));
+		}
+		let childTokens = item?.tokens || [];
+		if (childTokens.length) {
+			for (let child of this.renderMarkdownTokens(doc, childTokens, formulas)) {
+				li.appendChild(child);
+			}
+		}
+		else if (item?.text) {
+			for (let child of this.buildTextNodesWithFormulaPlaceholders(doc, item.text, formulas)) {
+				li.appendChild(child);
+			}
+		}
+		this.setMarkdownSourceAttribute(li, item?.raw || "", formulas);
+		return li;
+	},
+
+	renderMarkdownTable(doc, token, formulas = []) {
+		let table = doc.createElementNS(this.HTML_NS, "table");
+		let thead = doc.createElementNS(this.HTML_NS, "thead");
+		let tbody = doc.createElementNS(this.HTML_NS, "tbody");
+		let headerRow = doc.createElementNS(this.HTML_NS, "tr");
+		for (let [index, cell] of Array.from(token.header || []).entries()) {
+			headerRow.appendChild(this.renderMarkdownTableCell(doc, "th", cell, token.align?.[index], formulas));
+		}
+		thead.appendChild(headerRow);
+		table.appendChild(thead);
+		for (let row of token.rows || []) {
+			let tr = doc.createElementNS(this.HTML_NS, "tr");
+			for (let [index, cell] of Array.from(row || []).entries()) {
+				tr.appendChild(this.renderMarkdownTableCell(doc, "td", cell, token.align?.[index], formulas));
+			}
+			tbody.appendChild(tr);
+		}
+		table.appendChild(tbody);
+		this.setMarkdownSourceAttribute(table, token.raw || "", formulas);
+		return table;
+	},
+
+	renderMarkdownTableCell(doc, tag, cell, align, formulas = []) {
+		let el = doc.createElementNS(this.HTML_NS, tag);
+		if (align) el.setAttribute("align", align);
+		let tokens = cell?.tokens || [];
+		if (tokens.length) {
+			for (let child of this.renderInlineMarkdownTokens(doc, tokens, formulas, cell?.text || "")) {
+				el.appendChild(child);
+			}
+		}
+		else {
+			for (let child of this.buildTextNodesWithFormulaPlaceholders(doc, cell?.text || "", formulas)) {
+				el.appendChild(child);
+			}
+		}
+		return el;
+	},
+
+	renderInlineMarkdownTokens(doc, tokens, formulas = [], fallbackText = "") {
+		if ((!tokens || !tokens.length) && fallbackText) {
+			return this.buildTextNodesWithFormulaPlaceholders(doc, fallbackText, formulas);
+		}
 		let nodes = [];
-		let i = 0;
-		let pushText = (value) => {
-			if (!value) return;
-			nodes.push(doc.createTextNode(value));
-		};
-		while (i < source.length) {
-			let token =
-				this.matchInlineToken(source, i, "`", "`", "code") ||
-				this.matchInlineToken(source, i, "**", "**", "strong") ||
-				this.matchInlineToken(source, i, "__", "__", "strong") ||
-				this.matchInlineToken(source, i, "~~", "~~", "del") ||
-				this.matchInlineToken(source, i, "*", "*", "em") ||
-				this.matchInlineToken(source, i, "_", "_", "em") ||
-				this.matchInlineLink(source, i) ||
-				this.matchInlineFormulaPlaceholder(source, i, formulas) ||
-				this.matchInlineParenFormula(source, i) ||
-				this.matchInlineDollarFormula(source, i);
-			if (!token) {
-				pushText(source[i]);
-				i += 1;
-				continue;
+		for (let token of tokens || []) {
+			for (let node of this.renderInlineMarkdownToken(doc, token, formulas)) {
+				nodes.push(node);
 			}
-			if (token.start > i) {
-				pushText(source.slice(i, token.start));
-			}
-			nodes.push(this.buildInlineTokenNode(doc, token, formulas));
-			i = token.end;
 		}
 		return this.mergeAdjacentTextNodes(doc, nodes);
 	},
 
-	matchInlineFormulaPlaceholder(source, startIndex, formulas = []) {
-		let rest = source.slice(startIndex);
-		let match = rest.match(/^@@MATHINLINE(\d+)@@/);
-		if (!match) return null;
-		let formula = formulas[parseInt(match[1], 10)];
+	renderInlineMarkdownToken(doc, token, formulas = []) {
+		if (!token) return [];
+		let raw = String(token.raw || "");
+		let text = "text" in token ? String(token.text || "") : raw;
+		let formulaMatch = this.matchFormulaPlaceholderSource(text || raw, formulas);
+		if (formulaMatch && !formulaMatch.displayMode) {
+			return [this.buildFormulaNode(doc, formulaMatch.expr, false, formulaMatch.openDelimiter, formulaMatch.closeDelimiter)];
+		}
+		switch (token.type) {
+			case "text":
+				if (Array.isArray(token.tokens) && token.tokens.length) {
+					return this.renderInlineMarkdownTokens(doc, token.tokens, formulas, token.text || "");
+				}
+				return this.buildTextNodesWithFormulaPlaceholders(doc, text, formulas);
+			case "escape":
+				return this.buildTextNodesWithFormulaPlaceholders(doc, text, formulas);
+			case "codespan": {
+				let code = doc.createElementNS(this.HTML_NS, "code");
+				code.textContent = token.text || "";
+				this.setMarkdownSourceAttribute(code, raw, formulas);
+				return [code];
+			}
+			case "strong":
+			case "em":
+			case "del": {
+				let tag = token.type === "strong" ? "strong" : token.type;
+				let el = doc.createElementNS(this.HTML_NS, tag);
+				for (let child of this.renderInlineMarkdownTokens(doc, token.tokens || [], formulas, token.text || "")) {
+					el.appendChild(child);
+				}
+				this.setMarkdownSourceAttribute(el, raw, formulas);
+				return [el];
+			}
+			case "link": {
+				let a = doc.createElementNS(this.HTML_NS, "a");
+				let href = this.sanitizeURL(token.href || "");
+				if (href) a.setAttribute("href", href);
+				if (token.title) a.setAttribute("title", token.title);
+				for (let child of this.renderInlineMarkdownTokens(doc, token.tokens || [], formulas, token.text || token.href || "")) {
+					a.appendChild(child);
+				}
+				this.setMarkdownSourceAttribute(a, raw, formulas);
+				return [a];
+			}
+			case "image": {
+				let img = doc.createElementNS(this.HTML_NS, "img");
+				let src = this.sanitizeURL(token.href || "");
+				if (src) img.setAttribute("src", src);
+				img.setAttribute("alt", token.text || "");
+				if (token.title) img.setAttribute("title", token.title);
+				this.setMarkdownSourceAttribute(img, raw, formulas);
+				return [img];
+			}
+			case "br":
+				return [doc.createElementNS(this.HTML_NS, "br")];
+			case "html":
+				return [doc.createTextNode(token.text || raw)];
+			default:
+				if (Array.isArray(token.tokens) && token.tokens.length) {
+					return this.renderInlineMarkdownTokens(doc, token.tokens, formulas, token.text || "");
+				}
+				return this.buildTextNodesWithFormulaPlaceholders(doc, text || raw, formulas);
+		}
+	},
+
+	restoreFormulaPlaceholders(text, formulas = []) {
+		return String(text || "")
+			.replace(/@@MATHBLOCK(\d+)@@/g, (_match, index) => {
+				let formula = formulas[parseInt(index, 10)];
+				return formula ? `${formula.openDelimiter}${formula.expr}${formula.closeDelimiter}` : "";
+			})
+			.replace(/@@MATHINLINE(\d+)@@/g, (_match, index) => {
+				let formula = formulas[parseInt(index, 10)];
+				return formula ? `${formula.openDelimiter}${formula.expr}${formula.closeDelimiter}` : "";
+			});
+	},
+
+	setMarkdownSourceAttribute(node, source, formulas = []) {
+		if (!node || node.nodeType !== 1) return;
+		let restored = this.restoreFormulaPlaceholders(source, formulas);
+		if (restored) {
+			node.setAttribute("data-md-source", restored);
+		}
+	},
+
+	getFormulaPlaceholder(formulas = [], kind, index) {
+		let formula = formulas[parseInt(index, 10)];
 		if (!formula) return null;
 		return {
-			kind: "formula",
-			start: startIndex,
-			end: startIndex + match[0].length,
-			content: formula.expr,
+			expr: formula.expr,
 			openDelimiter: formula.openDelimiter,
-			closeDelimiter: formula.closeDelimiter
+			closeDelimiter: formula.closeDelimiter,
+			displayMode: kind === "BLOCK" || !!formula.displayMode
 		};
+	},
+
+	matchFormulaPlaceholderSource(source, formulas = []) {
+		let match = String(source || "").trim().match(/^@@MATH(INLINE|BLOCK)(\d+)@@$/);
+		if (!match) return null;
+		return this.getFormulaPlaceholder(formulas, match[1], match[2]);
+	},
+
+	buildTextNodesWithFormulaPlaceholders(doc, text, formulas = []) {
+		let source = String(text || "");
+		let nodes = [];
+		let lastIndex = 0;
+		let pattern = /@@MATH(INLINE|BLOCK)(\d+)@@/g;
+		for (let match of source.matchAll(pattern)) {
+			if (match.index > lastIndex) {
+				nodes.push(doc.createTextNode(source.slice(lastIndex, match.index)));
+			}
+			let formula = this.getFormulaPlaceholder(formulas, match[1], match[2]);
+			if (formula) {
+				nodes.push(this.buildFormulaNode(doc, formula.expr, formula.displayMode, formula.openDelimiter, formula.closeDelimiter));
+			}
+			else {
+				nodes.push(doc.createTextNode(match[0]));
+			}
+			lastIndex = match.index + match[0].length;
+		}
+		if (lastIndex < source.length) {
+			nodes.push(doc.createTextNode(source.slice(lastIndex)));
+		}
+		return this.mergeAdjacentTextNodes(doc, nodes);
 	},
 
 	tokenizeFormulaPlaceholders(text) {
@@ -1593,97 +1851,6 @@ ZoteroCopilot = {
 
 	restoreMarkdownCodeSegments(text, segments = []) {
 		return String(text || "").replace(/\u0000CODETOKEN(\d+)\u0000/g, (_match, index) => segments[parseInt(index, 10)] || "");
-	},
-
-	postProcessFormulaNodes(doc, nodes) {
-		for (let node of nodes || []) {
-			this.postProcessFormulaNode(doc, node);
-		}
-	},
-
-	postProcessFormulaNode(doc, node) {
-		if (!node || node.nodeType !== 1) return;
-		if (node.getAttribute?.("data-md-formula")) return;
-		let tag = String(node.localName || node.nodeName || "").toLowerCase();
-		if (["pre", "code"].includes(tag)) return;
-		if (["p", "div", "li", "blockquote"].includes(tag)) {
-			let text = String(node.textContent || "").trim();
-			let blockMatch = text.match(/^\$\$([\s\S]+)\$\$$/) || text.match(/^\\\[([\s\S]+)\\\]$/);
-			if (blockMatch && node.childNodes.length === 1 && node.firstChild?.nodeType === 3) {
-				let openDelimiter = text.startsWith("\\[") ? "\\[" : "$$";
-				let closeDelimiter = text.startsWith("\\[") ? "\\]" : "$$";
-				let formulaNode = this.buildFormulaNode(doc, blockMatch[1], true, openDelimiter, closeDelimiter);
-				while (node.firstChild) node.removeChild(node.firstChild);
-				node.appendChild(formulaNode);
-				return;
-			}
-		}
-		let children = Array.from(node.childNodes || []);
-		for (let child of children) {
-			if (child.nodeType === 3) {
-				let replacements = this.buildTextFormulaSequence(doc, child.nodeValue || "");
-				if (replacements.length === 1 && replacements[0].nodeType === 3) continue;
-				for (let replacement of replacements) {
-					node.insertBefore(replacement, child);
-				}
-				node.removeChild(child);
-				continue;
-			}
-			this.postProcessFormulaNode(doc, child);
-		}
-	},
-
-	buildTextFormulaSequence(doc, text) {
-		let source = String(text || "");
-		let nodes = [];
-		let index = 0;
-		let pushText = (value) => {
-			if (!value) return;
-			nodes.push(doc.createTextNode(value));
-		};
-		while (index < source.length) {
-			let token =
-				this.matchInlineParenFormula(source, index) ||
-				this.matchInlineDollarFormula(source, index);
-			if (!token) {
-				pushText(source[index]);
-				index += 1;
-				continue;
-			}
-			if (token.start > index) {
-				pushText(source.slice(index, token.start));
-			}
-			nodes.push(this.buildFormulaNode(doc, token.content, false, token.openDelimiter, token.closeDelimiter));
-			index = token.end;
-		}
-		return this.mergeAdjacentTextNodes(doc, nodes);
-	},
-
-	matchInlineToken(source, startIndex, open, close, kind) {
-		if (!source.startsWith(open, startIndex)) return null;
-		let end = source.indexOf(close, startIndex + open.length);
-		if (end <= startIndex + open.length) return null;
-		return {
-			kind,
-			start: startIndex,
-			end: end + close.length,
-			content: source.slice(startIndex + open.length, end)
-		};
-	},
-
-	matchInlineLink(source, startIndex) {
-		if (source[startIndex] !== "[") return null;
-		let mid = source.indexOf("](", startIndex + 1);
-		if (mid === -1) return null;
-		let end = source.indexOf(")", mid + 2);
-		if (end === -1) return null;
-		return {
-			kind: "link",
-			start: startIndex,
-			end: end + 1,
-			label: source.slice(startIndex + 1, mid),
-			href: source.slice(mid + 2, end)
-		};
 	},
 
 	matchInlineParenFormula(source, startIndex) {
@@ -1721,39 +1888,6 @@ ZoteroCopilot = {
 			}
 		}
 		return null;
-	},
-
-	buildInlineTokenNode(doc, token, formulas = []) {
-		switch (token.kind) {
-			case "code": {
-				let code = doc.createElementNS(this.HTML_NS, "code");
-				code.textContent = token.content || "";
-				return code;
-			}
-			case "strong":
-			case "em":
-			case "del": {
-				let tag = token.kind === "strong" ? "strong" : (token.kind === "em" ? "em" : "del");
-				let el = doc.createElementNS(this.HTML_NS, tag);
-				for (let child of this.buildInlineMarkdownNodes(doc, token.content || "", formulas)) {
-					el.appendChild(child);
-				}
-				return el;
-			}
-			case "link": {
-				let a = doc.createElementNS(this.HTML_NS, "a");
-				let href = this.sanitizeURL(token.href || "");
-				if (href) a.setAttribute("href", href);
-				for (let child of this.buildInlineMarkdownNodes(doc, token.label || token.href || "", formulas)) {
-					a.appendChild(child);
-				}
-				return a;
-			}
-			case "formula":
-				return this.buildFormulaNode(doc, token.content, false, token.openDelimiter, token.closeDelimiter);
-			default:
-				return doc.createTextNode(token.content || "");
-		}
 	},
 
 	buildFormulaNode(doc, expr, displayMode, openDelimiter, closeDelimiter) {
@@ -2117,6 +2251,15 @@ ZoteroCopilot = {
 				let label = children || href;
 				return href ? `[${label}](${href})` : label;
 			}
+			case "img": {
+				let alt = node.getAttribute?.("alt") || "";
+				let src = node.getAttribute?.("src") || "";
+				return src ? `![${alt}](${src})` : alt;
+			}
+			case "input":
+				return String(node.getAttribute?.("type") || "").toLowerCase() === "checkbox"
+					? (node.getAttribute?.("checked") != null ? "[x]" : "[ ]")
+					: "";
 			case "p":
 				return `${children}\n\n`;
 			case "h1":
@@ -2136,6 +2279,8 @@ ZoteroCopilot = {
 				return `${Array.from(node.children || []).map((child, index) => `${index + 1}. ${this.normalizeCopiedMarkdown(this.serializeMarkdownNode(child)).replace(/\n/g, "\n   ")}`).join("\n")}\n\n`;
 			case "li":
 				return this.normalizeCopiedMarkdown(children);
+			case "hr":
+				return "\n---\n\n";
 			case "summary":
 				return "";
 			default:
@@ -2149,6 +2294,275 @@ ZoteroCopilot = {
 			.replace(/[ \t]+\n/g, "\n")
 			.replace(/\n{3,}/g, "\n\n")
 			.trim();
+	},
+
+	rangeIntersectsNode(range, node) {
+		if (!range || !node) return false;
+		let END_TO_START = range.END_TO_START ?? globalThis.Range?.END_TO_START ?? 3;
+		let START_TO_END = range.START_TO_END ?? globalThis.Range?.START_TO_END ?? 1;
+		try {
+			let nodeRange = node.ownerDocument?.createRange?.();
+			if (!nodeRange) return false;
+			try {
+				nodeRange.selectNode(node);
+			}
+			catch (_e) {
+				nodeRange.selectNodeContents(node);
+			}
+			return range.compareBoundaryPoints(END_TO_START, nodeRange) < 0
+				&& range.compareBoundaryPoints(START_TO_END, nodeRange) > 0;
+		}
+		catch (_e) {
+			return false;
+		}
+	},
+
+	isRangeFullySelectingNodeContents(range, node) {
+		if (!range || !node) return false;
+		let START_TO_START = range.START_TO_START ?? globalThis.Range?.START_TO_START ?? 0;
+		let END_TO_END = range.END_TO_END ?? globalThis.Range?.END_TO_END ?? 2;
+		try {
+			let nodeRange = node.ownerDocument?.createRange?.();
+			if (!nodeRange) return false;
+			nodeRange.selectNodeContents(node);
+			return range.compareBoundaryPoints(START_TO_START, nodeRange) <= 0
+				&& range.compareBoundaryPoints(END_TO_END, nodeRange) >= 0;
+		}
+		catch (_e) {
+			return false;
+		}
+	},
+
+	getIntersectingMarkdownRoots(state, range) {
+		if (!state?.messages || !range) return [];
+		return Array.from(state.messages.querySelectorAll?.(".zc-markdown") || [])
+			.filter((root) => this.rangeIntersectsNode(range, root));
+	},
+
+	getSelectedMarkdownRootSource(root) {
+		return this.normalizeCopiedMarkdown(root?.dataset?.markdownSource || "");
+	},
+
+	getBoundaryElementNode(container) {
+		if (!container) return null;
+		if (container.nodeType === 1) return container;
+		if (container.nodeType === 3) return container.parentElement || container.parentNode || null;
+		return container.parentElement || container.parentNode || null;
+	},
+
+	getContainingFormulaNode(node) {
+		let current = this.getBoundaryElementNode(node);
+		while (current) {
+			if (current.nodeType === 1 && current.getAttribute?.("data-md-formula")) {
+				return this.getOutermostFormulaNode(current);
+			}
+			current = current.parentElement || current.parentNode || null;
+		}
+		return null;
+	},
+
+	getOutermostFormulaNode(node) {
+		if (!node || node.nodeType !== 1 || !node.getAttribute?.("data-md-formula")) return null;
+		let rawFormula = node.getAttribute("data-md-formula");
+		let displayMode = String(node.getAttribute("data-md-formula-display") || "").toLowerCase();
+		let current = node;
+		let parent = current.parentElement;
+		while (parent?.nodeType === 1 && parent.getAttribute?.("data-md-formula") === rawFormula) {
+			let parentDisplayMode = String(parent.getAttribute("data-md-formula-display") || "").toLowerCase();
+			if (parentDisplayMode !== displayMode) break;
+			current = parent;
+			parent = current.parentElement;
+		}
+		return current;
+	},
+
+	normalizeRangeForCopy(range) {
+		if (!range?.cloneRange) return range;
+		let normalized = range.cloneRange();
+		try {
+			let startFormula = this.getContainingFormulaNode(range.startContainer);
+			if (startFormula && this.rangeIntersectsNode(range, startFormula)) {
+				normalized.setStartBefore(startFormula);
+			}
+			let endFormula = this.getContainingFormulaNode(range.endContainer);
+			if (endFormula && this.rangeIntersectsNode(range, endFormula)) {
+				normalized.setEndAfter(endFormula);
+			}
+		}
+		catch (_e) {}
+		return normalized;
+	},
+
+	isRangeFullySelectingNode(range, node) {
+		if (!range || !node) return false;
+		let START_TO_START = range.START_TO_START ?? globalThis.Range?.START_TO_START ?? 0;
+		let END_TO_END = range.END_TO_END ?? globalThis.Range?.END_TO_END ?? 2;
+		try {
+			let nodeRange = node.ownerDocument?.createRange?.();
+			if (!nodeRange) return false;
+			nodeRange.selectNode(node);
+			return range.compareBoundaryPoints(START_TO_START, nodeRange) <= 0
+				&& range.compareBoundaryPoints(END_TO_END, nodeRange) >= 0;
+		}
+		catch (_e) {
+			return false;
+		}
+	},
+
+	getNodeMarkdownSource(node) {
+		if (!node || node.nodeType !== 1) return "";
+		return node.getAttribute?.("data-md-source")
+			|| node.getAttribute?.("data-md-block-source")
+			|| "";
+	},
+
+	getSelectedMarkdownNodeSource(node, range) {
+		if (!node || !range || !this.rangeIntersectsNode(range, node)) return "";
+		if (!this.isRangeFullySelectingNode(range, node) && !this.isRangeFullySelectingNodeContents(range, node)) {
+			return "";
+		}
+		return this.getNodeMarkdownSource(node);
+	},
+
+	getSelectedTextFromNode(node, range) {
+		if (!node || node.nodeType !== 3 || !this.rangeIntersectsNode(range, node)) return "";
+		let value = node.nodeValue || "";
+		let start = 0;
+		let end = value.length;
+		if (range.startContainer === node) {
+			start = Math.max(0, Math.min(value.length, range.startOffset));
+		}
+		if (range.endContainer === node) {
+			end = Math.max(0, Math.min(value.length, range.endOffset));
+		}
+		if (range.startContainer === node && range.endContainer === node) {
+			start = Math.max(0, Math.min(value.length, Math.min(range.startOffset, range.endOffset)));
+			end = Math.max(0, Math.min(value.length, Math.max(range.startOffset, range.endOffset)));
+		}
+		if (end <= start) return "";
+		return value.slice(start, end);
+	},
+
+	serializeSelectedMarkdownChildren(node, range) {
+		return Array.from(node?.childNodes || [])
+			.map((child) => this.serializeSelectedMarkdownNode(child, range))
+			.join("");
+	},
+
+	serializeSelectedMarkdownNode(node, range, assumeIntersecting = false) {
+		if (!node || (!assumeIntersecting && !this.rangeIntersectsNode(range, node))) return "";
+		if (node.nodeType === 3) {
+			return this.getSelectedTextFromNode(node, range);
+		}
+		if (node.nodeType === 11) {
+			return this.serializeSelectedMarkdownChildren(node, range);
+		}
+		if (node.nodeType !== 1) {
+			return "";
+		}
+		let formulaNode = this.getOutermostFormulaNode(node);
+		if (formulaNode) {
+			return formulaNode === node ? this.getSerializedFormulaSource(formulaNode) : "";
+		}
+		let source = this.getSelectedMarkdownNodeSource(node, range);
+		if (source) {
+			return source;
+		}
+		let tag = String(node.nodeName || "").toLowerCase();
+		let children = this.serializeSelectedMarkdownChildren(node, range);
+		switch (tag) {
+			case "br":
+				return "\n";
+			case "strong":
+			case "b":
+				return children ? `**${children}**` : "";
+			case "em":
+			case "i":
+				return children ? `*${children}*` : "";
+			case "del":
+			case "s":
+				return children ? `~~${children}~~` : "";
+			case "code":
+				if (String(node.parentNode?.nodeName || "").toLowerCase() === "pre") {
+					return children;
+				}
+				return children ? `\`${children}\`` : "";
+			case "a": {
+				let href = node.getAttribute?.("href") || "";
+				if (!children) return "";
+				return href ? `[${children}](${href})` : children;
+			}
+			case "img": {
+				let alt = node.getAttribute?.("alt") || "";
+				let src = node.getAttribute?.("src") || "";
+				return src ? `![${alt}](${src})` : alt;
+			}
+			case "input":
+				return String(node.getAttribute?.("type") || "").toLowerCase() === "checkbox"
+					? (node.getAttribute?.("checked") != null ? "[x]" : "[ ]")
+					: "";
+			case "p":
+				return children ? `${children}\n\n` : "";
+			case "h1":
+			case "h2":
+			case "h3":
+			case "h4":
+			case "h5":
+			case "h6":
+				return children ? `${"#".repeat(parseInt(tag.slice(1), 10))} ${children}\n\n` : "";
+			case "blockquote": {
+				if (!children) return "";
+				let quote = this.normalizeCopiedMarkdown(children).split("\n").map((line) => line ? `> ${line}` : ">").join("\n");
+				return `${quote}\n\n`;
+			}
+			case "ul":
+				return `${Array.from(node.children || [])
+					.map((child) => this.normalizeCopiedMarkdown(this.serializeSelectedMarkdownNode(child, range)))
+					.filter(Boolean)
+					.map((child) => `- ${child.replace(/\n/g, "\n  ")}`)
+					.join("\n")}\n\n`;
+			case "ol":
+				return `${Array.from(node.children || [])
+					.map((child, index) => ({
+						index,
+						text: this.normalizeCopiedMarkdown(this.serializeSelectedMarkdownNode(child, range))
+					}))
+					.filter((entry) => entry.text)
+					.map((entry) => `${entry.index + 1}. ${entry.text.replace(/\n/g, "\n   ")}`)
+					.join("\n")}\n\n`;
+			case "li":
+				return this.normalizeCopiedMarkdown(children);
+			case "pre":
+				return children || node.textContent || "";
+			case "hr":
+				return "\n---\n\n";
+			case "summary":
+				return "";
+			default:
+				return children;
+		}
+	},
+
+	serializeSelectedMarkdownRoot(root, range, selection = null) {
+		if (!root || !range || !this.rangeIntersectsNode(range, root)) return "";
+		if (this.isRangeFullySelectingNodeContents(range, root)) {
+			let source = this.getSelectedMarkdownRootSource(root);
+			if (source) return source;
+		}
+		return this.normalizeCopiedMarkdown(this.serializeSelectedMarkdownChildren(root, range));
+	},
+
+	serializeMarkdownSelection(state, range, selection = null) {
+		let roots = this.getIntersectingMarkdownRoots(state, range);
+		if (!roots.length) return "";
+		let parts = [];
+		for (let root of roots) {
+			let serialized = this.serializeSelectedMarkdownRoot(root, range, selection);
+			if (serialized) {
+				parts.push(serialized);
+			}
+		}
+		return this.normalizeCopiedMarkdown(parts.join("\n\n"));
 	},
 
 	sanitizeDOMString(text) {
@@ -2312,6 +2726,7 @@ ZoteroCopilot = {
 				min-height:0;
 				padding:8px;
 				box-sizing:border-box;
+				overflow-x:hidden;
 				background: linear-gradient(180deg, var(--zc-bg-1) 0%, var(--zc-bg-2) 100%);
 				color:var(--zc-text);
 				font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -2404,47 +2819,62 @@ ZoteroCopilot = {
 			.zc-chip-remove:active { transform:translateY(1px) scale(0.9); background:color-mix(in srgb, var(--zc-surface) 82%, rgba(64,101,161,0.18)); box-shadow: inset 0 1px 2px rgba(0,0,0,0.12); }
 			.zc-status { min-height:18px; font-size:12px; color:var(--zc-subtle); }
 			.zc-status.is-error { color:#b91c1c; }
-			.zc-messages-wrap { flex:1 1 auto; min-height:180px; position:relative; }
+			.zc-messages-wrap { flex:1 1 auto; min-height:180px; min-width:0; position:relative; overflow-x:hidden; }
 			.zc-empty-state, .zc-messages { height:100%; box-sizing:border-box; border-radius:8px; background:var(--zc-surface); border:1px solid var(--zc-soft-border); box-shadow:none; }
 			.zc-empty-state { display:flex; align-items:center; justify-content:center; padding:18px; text-align:center; color:var(--zc-muted); }
-			.zc-messages { display:none; overflow-y:auto; padding:8px; }
+			.zc-messages { display:none; min-width:0; overflow-y:auto; overflow-x:hidden; padding:8px; }
 			.zc-messages.has-messages { display:flex; flex-direction:column; gap:10px; }
-			.zc-message { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-radius:8px; max-width:95%; animation:zc-fade-in 140ms ease-out; transition:border-color 120ms ease, box-shadow 120ms ease, background 120ms ease; }
-			.zc-message-top { justify-content:space-between; gap:12px; }
+			.zc-message { display:flex; flex-direction:column; gap:6px; min-width:0; box-sizing:border-box; padding:8px 10px; border-radius:8px; max-width:95%; animation:zc-fade-in 140ms ease-out; transition:border-color 120ms ease, box-shadow 120ms ease, background 120ms ease; }
+			.zc-message-top { justify-content:space-between; gap:12px; min-width:0; }
 			.zc-message-user { align-self:flex-end; background:var(--zc-user); border:1px solid var(--zc-user-border); }
 			.zc-message-assistant { align-self:flex-start; background:var(--zc-assistant); border:1px solid var(--zc-assistant-border); }
 			.zc-message-error { align-self:flex-start; background:var(--zc-error); border:1px solid var(--zc-error-border); }
 			.zc-message.is-editing { box-shadow: inset 0 0 0 1px rgba(64,101,161,0.24); border-color: rgba(64,101,161,0.46); background: color-mix(in srgb, var(--zc-user) 82%, var(--zc-surface-strong)); }
 			.zc-message-role { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; }
-			.zc-message-actions { margin-left:auto; gap:6px; justify-content:flex-end; opacity:1; pointer-events:auto; }
-			.zc-message-action { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid transparent; border-radius:999px; background:transparent; color:var(--zc-subtle); cursor:pointer; padding:0; font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; transition:background 120ms ease, border-color 120ms ease, color 120ms ease, transform 100ms ease, box-shadow 120ms ease; }
+			.zc-message-actions { margin-left:auto; margin-top:-2px; gap:6px; min-width:0; flex:0 0 auto; justify-content:flex-end; opacity:1; pointer-events:auto; }
+			.zc-message-action { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid transparent; border-radius:999px; background:transparent; color:var(--zc-subtle); cursor:pointer; padding:0 0 2px; font: 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; transition:background 120ms ease, border-color 120ms ease, color 120ms ease, transform 100ms ease, box-shadow 120ms ease; }
 			.zc-message-action:hover { color:var(--zc-text); background:color-mix(in srgb, var(--zc-surface-strong) 82%, rgba(64,101,161,0.10)); border-color:color-mix(in srgb, var(--zc-user-border) 45%, var(--zc-soft-border)); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 28%, transparent), 0 2px 6px rgba(0,0,0,0.08); }
 			.zc-message-action:active { transform:translateY(1px) scale(0.93); background:color-mix(in srgb, var(--zc-surface) 78%, rgba(64,101,161,0.16)); box-shadow: inset 0 1px 2px rgba(0,0,0,0.12); }
+			.zc-message-action.is-active { color:var(--zc-text); background:color-mix(in srgb, var(--zc-surface-strong) 76%, rgba(64,101,161,0.18)); border-color:color-mix(in srgb, var(--zc-user-border) 68%, var(--zc-soft-border)); box-shadow:inset 0 1px 2px rgba(0,0,0,0.12), 0 0 0 1px color-mix(in srgb, var(--zc-user-border) 24%, transparent); }
+			.zc-message-action.is-active:hover { background:color-mix(in srgb, var(--zc-surface-strong) 72%, rgba(64,101,161,0.22)); border-color:color-mix(in srgb, var(--zc-user-border) 74%, var(--zc-soft-border)); }
 			.zc-message-sources { display:flex; flex-wrap:wrap; gap:6px; }
-			.zc-message-reasoning { border:1px solid var(--zc-soft-border); border-radius:6px; padding:6px 8px; background:var(--zc-surface); }
+			.zc-message-reasoning { border:1px solid var(--zc-soft-border); border-radius:6px; padding:6px 8px; background:var(--zc-surface); overflow:visible; }
 			.zc-message-reasoning-summary { cursor:pointer; color:var(--zc-subtle); }
-			.zc-message-reasoning-body { margin-top:6px; color:var(--zc-subtle); font-size:12px; }
-			.zc-message-body { }
-			.zc-markdown { user-select:text; -moz-user-select:text; white-space:normal; }
+			.zc-message-reasoning-body { margin-top:6px; color:var(--zc-subtle); font-size:12px; min-height:0; overflow:visible; }
+			.zc-message-body { min-width:0; min-height:0; overflow:visible; }
+			.zc-markdown { user-select:none; -moz-user-select:none; min-width:0; min-height:0; max-width:100%; white-space:normal; overflow:visible; }
+			.zc-markdown.is-raw-markdown { user-select:text; -moz-user-select:text; white-space:pre-wrap; white-space:break-spaces; overflow-x:auto; overflow-y:visible; font-family:Consolas, "SFMono-Regular", monospace; font-size:12px; line-height:1.5; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, #000 4%); border:1px solid var(--zc-soft-border); }
 			.zc-markdown-fallback { white-space:pre-wrap; }
-			.zc-markdown p, .zc-markdown ul, .zc-markdown ol, .zc-markdown pre, .zc-markdown blockquote, .zc-markdown h1, .zc-markdown h2, .zc-markdown h3, .zc-markdown h4, .zc-markdown h5, .zc-markdown h6 { margin:0 0 8px; }
-			.zc-markdown p:last-child, .zc-markdown ul:last-child, .zc-markdown ol:last-child, .zc-markdown pre:last-child, .zc-markdown blockquote:last-child { margin-bottom:0; }
+			.zc-markdown p, .zc-markdown ul, .zc-markdown ol, .zc-markdown pre, .zc-markdown blockquote, .zc-markdown h1, .zc-markdown h2, .zc-markdown h3, .zc-markdown h4, .zc-markdown h5, .zc-markdown h6, .zc-markdown table, .zc-markdown hr { margin:0 0 8px; }
+			.zc-markdown p:last-child, .zc-markdown ul:last-child, .zc-markdown ol:last-child, .zc-markdown pre:last-child, .zc-markdown blockquote:last-child, .zc-markdown table:last-child, .zc-markdown hr:last-child { margin-bottom:0; }
+			.zc-markdown > :last-child, .zc-message-body > :last-child, .zc-message-reasoning-body > :last-child { margin-bottom:0 !important; }
 			.zc-markdown h1, .zc-markdown h2, .zc-markdown h3, .zc-markdown h4, .zc-markdown h5, .zc-markdown h6 { line-height:1.3; font-weight:700; }
 			.zc-markdown h1 { font-size:18px; }
 			.zc-markdown h2 { font-size:16px; }
 			.zc-markdown h3 { font-size:15px; }
 			.zc-markdown ul, .zc-markdown ol { padding-left:18px; }
 			.zc-markdown li + li { margin-top:4px; }
+			.zc-markdown strong, .zc-markdown b { font-weight:700; }
+			.zc-markdown em, .zc-markdown i { font-style:italic; }
+			.zc-markdown del, .zc-markdown s { text-decoration:line-through; }
+			.zc-markdown li input[type="checkbox"] { margin:0 6px 0 0; vertical-align:middle; }
 			.zc-markdown blockquote { padding-left:10px; border-left:3px solid var(--zc-soft-border); color:var(--zc-subtle); }
 			.zc-markdown code { font-family:Consolas, "SFMono-Regular", monospace; font-size:12px; padding:1px 4px; border-radius:4px; background:var(--zc-surface); border:1px solid var(--zc-soft-border); }
-			.zc-markdown pre { overflow:auto; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, #000 4%); border:1px solid var(--zc-soft-border); }
+			.zc-markdown pre { overflow-x:auto; overflow-y:visible; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, #000 4%); border:1px solid var(--zc-soft-border); }
 			.zc-markdown pre code { display:block; padding:0; border:0; background:transparent; }
 			.zc-markdown a { color:inherit; text-decoration:underline; text-underline-offset:2px; }
+			.zc-markdown img { max-width:100%; height:auto; }
+			.zc-markdown hr { border:0; border-top:1px solid var(--zc-soft-border); }
+			.zc-markdown table { display:block; overflow-x:auto; border-collapse:collapse; max-width:100%; }
+			.zc-markdown th, .zc-markdown td { padding:6px 8px; border:1px solid var(--zc-soft-border); text-align:left; }
+			.zc-markdown th { background:color-mix(in srgb, var(--zc-surface) 92%, #000 3%); font-weight:600; }
 			.zc-stream-tail { white-space:pre-wrap; }
 			.zc-formula-inline { display:inline-block; vertical-align:middle; max-width:100%; padding:0 1px; }
-			.zc-formula-block { display:block; overflow-x:auto; margin:8px 0; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, rgba(64,101,161,0.04)); border:1px solid var(--zc-soft-border); }
+			.zc-formula-block { display:block; box-sizing:border-box; max-width:100%; overflow-x:auto; overflow-y:visible; margin:8px 0; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, rgba(64,101,161,0.04)); border:1px solid var(--zc-soft-border); }
+			.zc-formula-block:last-child { margin-bottom:0; }
+			.zc-formula-block .katex-display { margin:0; }
 			.zc-formula-fallback { font-family:Consolas, "SFMono-Regular", monospace; white-space:pre-wrap; }
-			.zc-composer { margin-top:0; }
+			.zc-composer { margin-top:0; min-width:0; }
 			.zc-input-wrap { position:relative; align-items:flex-start; }
 			.zc-context-button-wrap { position:relative; flex:0 0 auto; }
 			.zc-context-button-wrap[hidden] { display:none; }
@@ -2456,9 +2886,9 @@ ZoteroCopilot = {
 			.zc-context-menu-item { display:flex; align-items:center; width:100%; padding:7px 10px; border:0; border-radius:8px; background:transparent; color:var(--zc-text); text-align:left; font:600 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor:pointer; transition:background 120ms ease, color 120ms ease, transform 100ms ease, box-shadow 120ms ease; }
 			.zc-context-menu-item:hover { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.12)); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 26%, transparent); }
 			.zc-context-menu-item:active { transform:translateX(1px); background:color-mix(in srgb, var(--zc-surface) 64%, rgba(64,101,161,0.18)); box-shadow:inset 0 1px 2px rgba(0,0,0,0.10); }
-			.zc-composer-resizebar { height:10px; margin:1px 0 1px; cursor:ns-resize; border-radius:999px; background:linear-gradient(180deg, transparent 0 40%, var(--zc-soft-border) 40% 60%, transparent 60% 100%); }
+			.zc-composer-resizebar { height:10px; margin:6px 0 3px; cursor:ns-resize; border-radius:999px; background:linear-gradient(180deg, transparent 0 40%, var(--zc-soft-border) 40% 60%, transparent 60% 100%); }
 			.zc-composer-resizebar:hover { background:linear-gradient(180deg, transparent 0 35%, var(--zc-border) 35% 65%, transparent 65% 100%); }
-			.zc-input { min-height:96px; height:96px; padding:8px 10px; resize:none; font:13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+			.zc-input { min-height:96px; height:96px; max-height:min(45vh, 320px); padding:8px 10px; resize:none; overflow-y:auto; font:13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 			.zc-input.is-dragging { outline: 2px solid rgba(64,101,161,0.28); background: color-mix(in srgb, var(--zc-surface-strong) 88%, rgba(64,101,161,0.12)); }
 			.zc-composer-profile-row { justify-content:space-between; width:100%; min-width:0; margin-bottom:6px; }
 			.zc-composer-footer { justify-content:space-between; align-items:center; gap:8px; flex-wrap:nowrap; min-width:0; margin-top:8px; }
@@ -2489,6 +2919,7 @@ ZoteroCopilot = {
 			state.editTargetMessageID = null;
 			state.editTargetRole = null;
 			state.pendingSourceRefs = [];
+			state.rawMarkdownMessageIDs?.clear?.();
 			state.input.value = "";
 			this.renderPendingSources(state);
 		}
@@ -2678,8 +3109,12 @@ ZoteroCopilot = {
 		let anchorRoot = selection.anchorNode?.nodeType === 1 ? selection.anchorNode : selection.anchorNode?.parentElement;
 		let focusRoot = selection.focusNode?.nodeType === 1 ? selection.focusNode : selection.focusNode?.parentElement;
 		if (!anchorRoot?.closest?.(".zc-markdown") && !focusRoot?.closest?.(".zc-markdown")) return;
-		let fragment = selection.getRangeAt(0).cloneContents();
-		let markdown = this.normalizeCopiedMarkdown(this.serializeFragmentToMarkdown(fragment));
+		let range = this.normalizeRangeForCopy(selection.getRangeAt(0));
+		let markdown = this.serializeMarkdownSelection(state, range, selection);
+		if (!markdown) {
+			let fragment = range.cloneContents();
+			markdown = this.normalizeCopiedMarkdown(this.serializeFragmentToMarkdown(fragment));
+		}
 		if (!markdown) return;
 		event.preventDefault();
 		event.clipboardData?.setData("text/plain", markdown);
@@ -2720,9 +3155,11 @@ ZoteroCopilot = {
 			state.composerSources.appendChild(chip);
 		}
 		this.updateSendButton(state);
+		this.setComposerInputHeight(state, state.input?.offsetHeight || 96);
 	},
 
-	renderMessages(state, messages) {
+	renderMessages(state, messages, { preserveScroll = false } = {}) {
+		let previousScrollTop = preserveScroll ? state.messages.scrollTop : 0;
 		state.messages.textContent = "";
 		if (!messages.length) {
 			state.emptyState.style.display = "";
@@ -2736,15 +3173,28 @@ ZoteroCopilot = {
 				isEditing: state.editTargetMessageID === message.messageID
 			}));
 		}
-		state.messages.scrollTop = state.messages.scrollHeight;
+		state.messages.scrollTop = preserveScroll ? previousScrollTop : state.messages.scrollHeight;
 	},
 
 	buildMessageNode(doc, message, { isEditing = false } = {}) {
 		let wrap = this.html(doc, "div", { className: `zc-message ${message.error ? "zc-message-error" : (message.role === "user" ? "zc-message-user" : "zc-message-assistant")}${isEditing ? " is-editing" : ""}` });
 		let top = this.html(doc, "div", { className: "zc-message-top" });
+		let isRawMarkdown = this.windows.get(doc.defaultView)?.rawMarkdownMessageIDs?.has?.(message.messageID);
 		top.appendChild(this.html(doc, "div", { className: "zc-message-role", textContent: message.error ? "error" : message.role }));
 		let actions = this.html(doc, "div", { className: "zc-message-actions" });
 		if (!message.error && (message.role === "user" || message.role === "assistant")) {
+			let copyButton = this.html(doc, "button", { className: "zc-message-action", type: "button", textContent: "⧉" });
+			copyButton.dataset.action = "copy-message";
+			copyButton.dataset.messageId = message.messageID;
+			copyButton.setAttribute("title", "复制原文");
+			actions.appendChild(copyButton);
+			let rawToggleButton = this.html(doc, "button", { className: "zc-message-action", type: "button", textContent: "<>" });
+			rawToggleButton.dataset.action = "toggle-raw-markdown";
+			rawToggleButton.dataset.messageId = message.messageID;
+			rawToggleButton.setAttribute("title", isRawMarkdown ? "恢复渲染视图" : "显示原始 Markdown");
+			rawToggleButton.setAttribute("aria-pressed", isRawMarkdown ? "true" : "false");
+			rawToggleButton.classList.toggle("is-active", !!isRawMarkdown);
+			actions.appendChild(rawToggleButton);
 			let editButton = this.html(doc, "button", { className: "zc-message-action", type: "button", textContent: "✎" });
 			editButton.dataset.action = message.role === "user" ? "edit-user" : "edit-assistant";
 			editButton.dataset.messageId = message.messageID;
@@ -2776,13 +3226,25 @@ ZoteroCopilot = {
 				reasoningWrap.setAttribute("open", "open");
 			}
 			reasoningWrap.appendChild(this.html(doc, "summary", { className: "zc-message-reasoning-summary", textContent: "Thought process" }));
-			let reasoningBody = this.html(doc, "div", { className: "zc-message-reasoning-body zc-markdown" });
-			this.setMarkdownContent(reasoningBody, message.reasoning);
+			let reasoningBody = this.html(doc, "div", { className: `zc-message-reasoning-body zc-markdown${isRawMarkdown ? " is-raw-markdown" : ""}` });
+			if (isRawMarkdown) {
+				reasoningBody.textContent = message.reasoning || "";
+				reasoningBody.dataset.markdownSource = message.reasoning || "";
+			}
+			else {
+				this.setMarkdownContent(reasoningBody, message.reasoning);
+			}
 			reasoningWrap.appendChild(reasoningBody);
 			wrap.appendChild(reasoningWrap);
 		}
-		let body = this.html(doc, "div", { className: "zc-message-body zc-markdown" });
-		this.setMarkdownContent(body, message.error || message.content || "");
+		let body = this.html(doc, "div", { className: `zc-message-body zc-markdown${isRawMarkdown ? " is-raw-markdown" : ""}` });
+		if (isRawMarkdown) {
+			body.textContent = message.error || message.content || "";
+			body.dataset.markdownSource = message.error || message.content || "";
+		}
+		else {
+			this.setMarkdownContent(body, message.error || message.content || "");
+		}
 		wrap.appendChild(body);
 		return wrap;
 	},
@@ -3119,9 +3581,41 @@ ZoteroCopilot = {
 		return null;
 	},
 
+	getMessageRawText(message) {
+		return String(message?.error || message?.content || "");
+	},
+
+	toggleMessageRawMarkdown(state, messageID) {
+		if (!state?.rawMarkdownMessageIDs) {
+			state.rawMarkdownMessageIDs = new Set();
+		}
+		if (state.rawMarkdownMessageIDs.has(messageID)) {
+			state.rawMarkdownMessageIDs.delete(messageID);
+		}
+		else {
+			state.rawMarkdownMessageIDs.add(messageID);
+		}
+		this.renderMessages(state, state.currentSession?.data?.messages || [], { preserveScroll: true });
+	},
+
 	async handleMessageAction(state, action, messageID) {
 		let session = state.currentSession;
 		if (!session) return;
+		if (action === "copy-message" || action === "toggle-raw-markdown") {
+			let index = this.findMessageIndex(session.data.messages, messageID);
+			if (index < 0) return;
+			let message = session.data.messages[index];
+			if (action === "copy-message") {
+				let text = this.getMessageRawText(message);
+				if (!text) return;
+				let copied = this.writeMarkdownToClipboard?.(text) || false;
+				this.setStatus(state, copied ? "已复制原文" : "复制失败", !copied);
+				return;
+			}
+			this.toggleMessageRawMarkdown(state, messageID);
+			this.setStatus(state, state.rawMarkdownMessageIDs?.has?.(messageID) ? "已切换到原始 Markdown 视图" : "已恢复渲染视图");
+			return;
+		}
 		if (action === "edit-user" || action === "edit-assistant") {
 			let index = this.findMessageIndex(session.data.messages, messageID);
 			if (index < 0) return;
@@ -4598,3 +5092,10 @@ ZoteroCopilot = {
 		Zotero.Prefs.set(this.PREF_BRANCH + name, !!value, true);
 	}
 };
+
+Object.assign(
+	ZoteroCopilot,
+	globalThis.ZoteroCopilotMarkdownCore || {},
+	globalThis.ZoteroCopilotMarkdownRender || {},
+	globalThis.ZoteroCopilotMarkdownCopy || {}
+);

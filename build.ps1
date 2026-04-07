@@ -39,6 +39,7 @@ $includePaths = @(
 	"updates.json",
 	"CLAUDE.md",
 	"locale",
+	"markdown",
 	"vendor"
 )
 
