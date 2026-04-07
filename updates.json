@@ -3,7 +3,7 @@
 		"zotero-copilot@example.com": {
 			"updates": [
 				{
-					"version": "0.3.10",
+					"version": "0.3.20",
 					"update_link": "https://github.com/lisontowind/zotero-copilot/releases/latest/download/zotero-copilot.xpi",
 					"applications": {
 						"zotero": {

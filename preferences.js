@@ -9,6 +9,12 @@ var ZoteroCopilotPreferences = {
 	modelPickerSearchTerm: "",
 	DEFAULT_SYSTEM_PROMPT_NAME: "默认学术助手",
 	DEFAULT_SYSTEM_PROMPT_CONTENT: "You are Zotero Copilot, an academic research assistant embedded in Zotero. Use the provided source context snapshots when relevant. If context is insufficient, say so explicitly. Respond in the user's language unless asked otherwise.",
+	DEFAULT_CHAT_HISTORY_MESSAGE_COUNT: 20,
+	MIN_CHAT_HISTORY_MESSAGE_COUNT: 2,
+	MAX_CHAT_HISTORY_MESSAGE_COUNT: 100,
+	DEFAULT_LLM_TEMPERATURE: 0.7,
+	MIN_LLM_TEMPERATURE: 0,
+	MAX_LLM_TEMPERATURE: 2,
 
 	PROVIDER_FIELDS: [
 		{ id: "copilot-provider-name", key: "name" },
@@ -68,6 +74,42 @@ var ZoteroCopilotPreferences = {
 			throw new Error(`${fieldLabel} 必须是 JSON 对象`);
 		}
 		return parsed;
+	},
+
+	getNumberPref(name, defaultValue = 0) {
+		let raw = Zotero.Prefs.get(this.PREF_BRANCH + name, true);
+		if (raw === undefined || raw === null || raw === "") return Number(defaultValue) || 0;
+		let value = Number(raw);
+		return Number.isFinite(value) ? value : (Number(defaultValue) || 0);
+	},
+
+	clampChatHistoryMessageCount(value) {
+		let normalized = Math.round(Number(value));
+		if (!Number.isFinite(normalized)) normalized = this.DEFAULT_CHAT_HISTORY_MESSAGE_COUNT;
+		return Math.max(this.MIN_CHAT_HISTORY_MESSAGE_COUNT, Math.min(this.MAX_CHAT_HISTORY_MESSAGE_COUNT, normalized));
+	},
+
+	getChatHistoryMessageCount() {
+		return this.clampChatHistoryMessageCount(this.getNumberPref("chatHistoryMessageCount", this.DEFAULT_CHAT_HISTORY_MESSAGE_COUNT));
+	},
+
+	setChatHistoryMessageCount(value) {
+		Zotero.Prefs.set(this.PREF_BRANCH + "chatHistoryMessageCount", this.clampChatHistoryMessageCount(value), true);
+	},
+
+	clampLLMTemperature(value) {
+		let normalized = Number(value);
+		if (!Number.isFinite(normalized)) normalized = this.DEFAULT_LLM_TEMPERATURE;
+		normalized = Math.round(normalized * 10) / 10;
+		return Math.max(this.MIN_LLM_TEMPERATURE, Math.min(this.MAX_LLM_TEMPERATURE, normalized));
+	},
+
+	getLLMTemperature() {
+		return this.clampLLMTemperature(this.getNumberPref("llmTemperature", this.DEFAULT_LLM_TEMPERATURE));
+	},
+
+	setLLMTemperature(value) {
+		Zotero.Prefs.set(this.PREF_BRANCH + "llmTemperature", this.clampLLMTemperature(value), true);
 	},
 
 	mergeRequestPayload(basePayload, extraPayload, reservedKeys = []) {
@@ -848,6 +890,25 @@ var ZoteroCopilotPreferences = {
 		this.setStatus(`已设为当前系统提示词：${savedPrompt.name}`);
 	},
 
+	loadChatSettingsIntoForm() {
+		let historyInput = this.$("copilot-chat-history-message-count");
+		let temperatureInput = this.$("copilot-llm-temperature");
+		if (historyInput) historyInput.value = String(this.getChatHistoryMessageCount());
+		if (temperatureInput) temperatureInput.value = this.getLLMTemperature().toFixed(1);
+	},
+
+	saveChatSettings() {
+		let historyInput = this.$("copilot-chat-history-message-count");
+		let temperatureInput = this.$("copilot-llm-temperature");
+		let nextHistoryCount = this.clampChatHistoryMessageCount(historyInput?.value);
+		let nextTemperature = this.clampLLMTemperature(temperatureInput?.value);
+		this.setChatHistoryMessageCount(nextHistoryCount);
+		this.setLLMTemperature(nextTemperature);
+		if (historyInput) historyInput.value = String(nextHistoryCount);
+		if (temperatureInput) temperatureInput.value = nextTemperature.toFixed(1);
+		this.setStatus(`已保存聊天参数：纳入 ${nextHistoryCount} 条对话，温度 ${nextTemperature.toFixed(1)}`);
+	},
+
 	readCurrentMergedSettings() {
 		let provider = this.readProviderForm();
 		let model = this.readModelForm();
@@ -1051,13 +1112,14 @@ var ZoteroCopilotPreferences = {
 		let payload = this.mergeRequestPayload(
 			{
 				model: llm.model,
+				temperature: this.getLLMTemperature(),
 				messages: [
 					{ role: "system", content: "Reply with exactly OK." },
 					{ role: "user", content: "ping" }
 				]
 			},
 			extraParams,
-			["model", "messages"]
+			["model", "messages", "temperature"]
 		);
 		let controller = new AbortController();
 		let timeoutID = setTimeout(() => controller.abort(), 30000);
@@ -1108,6 +1170,7 @@ var ZoteroCopilotPreferences = {
 		this.loadProviderIntoForm(this.$("copilot-provider-select")?.value || initialProviderID);
 		this.loadModelIntoForm(this.$("copilot-model-select")?.value || initialModelID);
 		this.loadPromptIntoForm(this.$("copilot-system-prompt-select")?.value || initialPromptID);
+		this.loadChatSettingsIntoForm();
 		this.syncTitleModelControls();
 		let providerSelect = this.$("copilot-provider-select");
 		let modelSelect = this.$("copilot-model-select");
@@ -1129,6 +1192,7 @@ var ZoteroCopilotPreferences = {
 		this.$("copilot-save-system-prompt")?.addEventListener("click", () => this.saveCurrentPrompt());
 		this.$("copilot-set-active-system-prompt")?.addEventListener("click", () => this.setCurrentPromptActive());
 		this.$("copilot-delete-system-prompt")?.addEventListener("click", () => this.deleteCurrentPrompt());
+		this.$("copilot-save-chat-settings")?.addEventListener("click", () => this.saveChatSettings());
 		this.$("copilot-test-llm")?.addEventListener("click", () => this.testConnection());
 		this.$("copilot-add-selected-models")?.addEventListener("click", () => this.addSelectedModels());
 		this.$("copilot-close-model-picker")?.addEventListener("click", () => this.closeModelPicker());

@@ -108,6 +108,23 @@
 					<html:button id="copilot-delete-system-prompt" type="button">删除提示词</html:button>
 				</html:div>
 			</html:section>
+
+			<html:section class="copilot-pref-subsection">
+				<html:div class="copilot-pref-subsection-head">
+					<html:h3>聊天参数</html:h3>
+					<html:p class="copilot-pref-helper">这些设置会同时作用于侧栏聊天面板和实际请求。</html:p>
+				</html:div>
+				<html:div class="copilot-pref-grid">
+					<html:label for="copilot-chat-history-message-count">纳入上下文的对话数量</html:label>
+					<html:input id="copilot-chat-history-message-count" type="number" min="2" max="100" step="1" />
+
+					<html:label for="copilot-llm-temperature">模型温度</html:label>
+					<html:input id="copilot-llm-temperature" type="number" min="0" max="2" step="0.1" />
+				</html:div>
+				<html:div class="copilot-pref-actions">
+					<html:button id="copilot-save-chat-settings" type="button">保存聊天参数</html:button>
+				</html:div>
+			</html:section>
 		</html:section>
 
 		<html:div class="copilot-pref-actions copilot-pref-status-row">
