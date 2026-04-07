@@ -18,6 +18,12 @@ ZoteroCopilot = {
 	SOURCE_LIMIT_CHARS: 40000,
 	CONTEXT_LIMIT_CHARS: 120000,
 	MAX_HISTORY_MESSAGES: 20,
+	DEFAULT_CHAT_HISTORY_MESSAGE_COUNT: 20,
+	MIN_CHAT_HISTORY_MESSAGE_COUNT: 2,
+	MAX_CHAT_HISTORY_MESSAGE_COUNT: 100,
+	DEFAULT_LLM_TEMPERATURE: 0.7,
+	MIN_LLM_TEMPERATURE: 0,
+	MAX_LLM_TEMPERATURE: 2,
 	STREAM_RENDER_INTERVAL_MS: 80,
 	STREAM_RENDER_DEGRADE_THRESHOLD: 16000,
 	STREAM_AUTO_SCROLL_THRESHOLD_PX: 48,
@@ -98,6 +104,7 @@ ZoteroCopilot = {
 			activeRequestID: null,
 			currentStreaming: null,
 			contextMenuActions: [],
+			isConfigMenuOpen: false,
 			toolbarSeparator
 		};
 		this.windows.set(window, state);
@@ -172,11 +179,19 @@ ZoteroCopilot = {
 		splitter.id = "zotero-copilot-splitter";
 		splitter.setAttribute("class", "zotero-copilot-splitter");
 		splitter.setAttribute("collapse", "after");
+		splitter.setAttribute("resizebefore", "closest");
 		splitter.setAttribute("resizeafter", "closest");
 
 		let panel = doc.createXULElement?.("vbox") || doc.createElement("div");
 		panel.id = "zotero-copilot-panel";
 		panel.setAttribute("class", "zotero-copilot-panel");
+		panel.setAttribute("width", "420");
+		panel.setAttribute("persist", "width");
+		panel.setAttribute("flex", "0");
+		if (panel.style) {
+			panel.style.width = "420px";
+			panel.style.flex = "0 0 auto";
+		}
 
 		let ui = this.buildViewUI(doc);
 		panel.appendChild(ui.root);
@@ -364,6 +379,89 @@ ZoteroCopilot = {
 		});
 		inputWrap.appendChild(input);
 		let composerFooter = this.html(doc, "div", { className: "zc-composer-footer" });
+		let configButtonWrap = this.html(doc, "div", { className: "zc-config-button-wrap" });
+		let configButton = this.html(doc, "button", {
+			className: "zc-btn zc-btn-ghost zc-context-button zc-config-button",
+			type: "button",
+			title: "聊天参数设置",
+			"aria-label": "聊天参数设置",
+			"aria-expanded": "false"
+		});
+		let configButtonGlyph = this.html(doc, "span", {
+			className: "zc-config-button-glyph",
+			textContent: "⚙"
+		});
+		configButton.appendChild(configButtonGlyph);
+		let configMenu = this.html(doc, "div", {
+			className: "zc-config-menu",
+			hidden: "hidden"
+		});
+		let configMenuTitle = this.html(doc, "div", {
+			className: "zc-config-menu-title",
+			textContent: "聊天参数"
+		});
+		let configMenuList = this.html(doc, "div", { className: "zc-config-menu-list" });
+		let configHistoryRow = this.html(doc, "label", {
+			className: "zc-config-menu-row",
+			for: "zc-config-history-count"
+		});
+		let configHistoryLabel = this.html(doc, "span", {
+			className: "zc-config-label",
+			textContent: "纳入对话数"
+		});
+		let configHistoryInput = this.html(doc, "input", {
+			id: "zc-config-history-count",
+			className: "zc-config-input",
+			type: "number",
+			min: String(this.MIN_CHAT_HISTORY_MESSAGE_COUNT),
+			max: String(this.MAX_CHAT_HISTORY_MESSAGE_COUNT),
+			step: "1"
+		});
+		let configTemperatureRow = this.html(doc, "label", {
+			className: "zc-config-menu-row",
+			for: "zc-config-temperature"
+		});
+		let configTemperatureLabel = this.html(doc, "span", {
+			className: "zc-config-label",
+			textContent: "温度"
+		});
+		let configTemperatureInput = this.html(doc, "input", {
+			id: "zc-config-temperature",
+			className: "zc-config-input",
+			type: "number",
+			min: String(this.MIN_LLM_TEMPERATURE),
+			max: String(this.MAX_LLM_TEMPERATURE),
+			step: "0.1"
+		});
+		let configMenuHelper = this.html(doc, "div", {
+			className: "zc-config-menu-helper",
+			textContent: "修改后立即作用于后续请求。"
+		});
+		let configMenuActions = this.html(doc, "div", { className: "zc-config-menu-actions" });
+		let configCancelButton = this.html(doc, "button", {
+			className: "zc-btn zc-btn-ghost",
+			type: "button",
+			textContent: "Cancel"
+		});
+		let configSaveButton = this.html(doc, "button", {
+			className: "zc-btn zc-btn-primary",
+			type: "button",
+			textContent: "Save"
+		});
+		configHistoryRow.appendChild(configHistoryLabel);
+		configHistoryRow.appendChild(configHistoryInput);
+		configTemperatureRow.appendChild(configTemperatureLabel);
+		configTemperatureRow.appendChild(configTemperatureInput);
+		configMenuList.appendChild(configHistoryRow);
+		configMenuList.appendChild(configTemperatureRow);
+		configMenuActions.appendChild(configCancelButton);
+		configMenuActions.appendChild(configSaveButton);
+		configMenu.appendChild(configMenuTitle);
+		configMenu.appendChild(configMenuList);
+		configMenu.appendChild(configMenuHelper);
+		configMenu.appendChild(configMenuActions);
+		configButtonWrap.appendChild(configButton);
+		configButtonWrap.appendChild(configMenu);
 		let contextButtonWrap = this.html(doc, "div", { className: "zc-context-button-wrap" });
 		let contextButton = this.html(doc, "button", {
 			className: "zc-btn zc-btn-ghost zc-context-button",
@@ -426,6 +524,7 @@ ZoteroCopilot = {
 		composerSecondaryActions.appendChild(cancelEditButton);
 		composerSecondaryActions.appendChild(regenerateButton);
 		composerSecondaryActions.appendChild(stopButton);
+		composerFooter.appendChild(configButtonWrap);
 		composerFooter.appendChild(contextButtonWrap);
 		composerSubmit.appendChild(composerSecondaryActions);
 		composerSubmit.appendChild(sendButton);
@@ -449,6 +548,14 @@ ZoteroCopilot = {
 			messages,
 			composerResizeBar,
 			composerSources,
+			configButtonWrap,
+			configButton,
+			configButtonGlyph,
+			configMenu,
+			configHistoryInput,
+			configTemperatureInput,
+			configCancelButton,
+			configSaveButton,
 			contextButtonWrap,
 			inputWrap,
 			input,
@@ -530,6 +637,24 @@ ZoteroCopilot = {
 			this.handleContextButtonClick(state, event).catch((e) => this.handleStateError(state, "打开上下文菜单失败", e));
 		};
 		state.contextButton.addEventListener("click", state.onContextButtonClick);
+		state.onConfigButtonClick = (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			this.toggleConfigMenu(state);
+		};
+		state.configButton.addEventListener("click", state.onConfigButtonClick);
+		state.onConfigMenuPointerDown = (event) => {
+			event.stopPropagation();
+		};
+		state.configMenu.addEventListener("pointerdown", state.onConfigMenuPointerDown);
+		state.onConfigMenuClick = (event) => {
+			event.stopPropagation();
+		};
+		state.configMenu.addEventListener("click", state.onConfigMenuClick);
+		state.onConfigSaveClick = () => this.saveSidebarConfig(state);
+		state.configSaveButton.addEventListener("click", state.onConfigSaveClick);
+		state.onConfigCancelClick = () => this.hideConfigMenu(state);
+		state.configCancelButton.addEventListener("click", state.onConfigCancelClick);
 		state.onContextMenuClick = (event) => {
 			let target = event.target?.closest?.(".zc-context-menu-item");
 			if (!target) return;
@@ -639,6 +764,9 @@ ZoteroCopilot = {
 			if (!this.isEventInside(event, ".zc-context-button-wrap")) {
 				this.hideContextMenu(state);
 			}
+			if (state.isConfigMenuOpen && !state.configButtonWrap?.contains?.(event.target)) {
+				this.hideConfigMenu(state);
+			}
 			if (state.isProfileMenuOpen && !this.isEventInside(event, ".zc-profile-menu") && !this.isEventInside(event, ".zc-profile-button")) {
 				this.hideProfileMenu(state);
 			}
@@ -669,6 +797,11 @@ ZoteroCopilot = {
 		state.stopButton?.removeEventListener("click", state.onStopClick);
 		state.input?.removeEventListener("keydown", state.onInputKeydown);
 		state.contextButton?.removeEventListener("click", state.onContextButtonClick);
+		state.configButton?.removeEventListener("click", state.onConfigButtonClick);
+		state.configMenu?.removeEventListener("pointerdown", state.onConfigMenuPointerDown);
+		state.configMenu?.removeEventListener("click", state.onConfigMenuClick);
+		state.configSaveButton?.removeEventListener("click", state.onConfigSaveClick);
+		state.configCancelButton?.removeEventListener("click", state.onConfigCancelClick);
 		state.contextMenuList?.removeEventListener("click", state.onContextMenuClick);
 		state.contextMenuList?.removeEventListener("pointerdown", state.onContextMenuPointerDown);
 		state.composerResizeBar?.removeEventListener("pointerdown", state.onResizePointerDown);
@@ -848,6 +981,7 @@ ZoteroCopilot = {
 	},
 
 	renderContextMenu(state, actions) {
+		this.hideConfigMenu(state);
 		state.contextMenuActions = actions;
 		state.contextMenuList.textContent = "";
 		for (let action of actions) {
@@ -866,6 +1000,43 @@ ZoteroCopilot = {
 		if (!state?.contextMenu) return;
 		state.contextMenu.hidden = true;
 		state.contextMenuActions = [];
+	},
+
+	showConfigMenu(state) {
+		if (!state?.configMenu) return;
+		this.hideContextMenu(state);
+		state.configHistoryInput.value = String(this.getChatHistoryMessageCount());
+		state.configTemperatureInput.value = this.getLLMTemperature().toFixed(1);
+		state.configMenu.hidden = false;
+		state.isConfigMenuOpen = true;
+		state.configButton?.classList?.add("is-active");
+		state.configButton?.setAttribute?.("aria-expanded", "true");
+	},
+
+	hideConfigMenu(state) {
+		if (!state?.configMenu) return;
+		state.configMenu.hidden = true;
+		state.isConfigMenuOpen = false;
+		state.configButton?.classList?.remove("is-active");
+		state.configButton?.setAttribute?.("aria-expanded", "false");
+	},
+
+	toggleConfigMenu(state) {
+		if (state?.isConfigMenuOpen) {
+			this.hideConfigMenu(state);
+			return;
+		}
+		this.showConfigMenu(state);
+	},
+
+	saveSidebarConfig(state) {
+		let nextHistoryCount = this.clampChatHistoryMessageCount(state?.configHistoryInput?.value);
+		let nextTemperature = this.clampLLMTemperature(state?.configTemperatureInput?.value);
+		this.setChatHistoryMessageCount(nextHistoryCount);
+		this.setLLMTemperature(nextTemperature);
+		if (state?.configHistoryInput) state.configHistoryInput.value = String(nextHistoryCount);
+		if (state?.configTemperatureInput) state.configTemperatureInput.value = nextTemperature.toFixed(1);
+		this.setStatus(state, `已更新聊天参数：纳入 ${nextHistoryCount} 条对话，温度 ${nextTemperature.toFixed(1)}`);
 	},
 
 	async activateContextMenuAction(state, actionID) {
@@ -2665,18 +2836,20 @@ ZoteroCopilot = {
 		return `
 			#zotero-copilot-panel {
 				min-width: 340px;
-				width: 420px;
+				width: auto;
 				max-width: 840px;
 				overflow: hidden;
 				border-left: 1px solid rgba(127, 127, 127, 0.28);
 				background: var(--material-sidepane, #f6f6f6);
 				position: relative;
 				z-index: auto;
+				flex: 0 0 auto;
 			}
 			#zotero-copilot-splitter {
 				border-left: 1px solid rgba(127,127,127,0.14);
 				border-right: 1px solid rgba(127,127,127,0.14);
 				background: rgba(127,127,127,0.06);
+				cursor: ew-resize;
 			}
 			.zotero-copilot-toolbar-button {
 				display: inline-flex;
@@ -2869,19 +3042,30 @@ ZoteroCopilot = {
 			.zc-markdown th, .zc-markdown td { padding:6px 8px; border:1px solid var(--zc-soft-border); text-align:left; }
 			.zc-markdown th { background:color-mix(in srgb, var(--zc-surface) 92%, #000 3%); font-weight:600; }
 			.zc-stream-tail { white-space:pre-wrap; }
-			.zc-formula-inline { display:inline-block; vertical-align:middle; max-width:100%; padding:0 1px; }
-			.zc-formula-block { display:block; box-sizing:border-box; max-width:100%; overflow-x:auto; overflow-y:visible; margin:8px 0; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, rgba(64,101,161,0.04)); border:1px solid var(--zc-soft-border); }
+			.zc-formula-inline { display:inline-block; vertical-align:middle; max-width:100%; padding:0 1px; font-size:0.94em; }
+			.zc-formula-block { display:block; box-sizing:border-box; max-width:100%; overflow-x:auto; overflow-y:visible; scrollbar-gutter:stable; margin:8px 0; padding:6px 12px 12px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, rgba(64,101,161,0.04)); border:1px solid var(--zc-soft-border); font-size:0.92em; }
 			.zc-formula-block:last-child { margin-bottom:0; }
-			.zc-formula-block .katex-display { margin:0; }
+			.zc-formula-block .katex-display { margin:0; font-size:1em; }
 			.zc-formula-fallback { font-family:Consolas, "SFMono-Regular", monospace; white-space:pre-wrap; }
 			.zc-composer { margin-top:0; min-width:0; }
 			.zc-input-wrap { position:relative; align-items:flex-start; }
-			.zc-context-button-wrap { position:relative; flex:0 0 auto; }
-			.zc-context-button-wrap[hidden] { display:none; }
+			.zc-config-button-wrap, .zc-context-button-wrap { position:relative; flex:0 0 auto; }
+			.zc-config-button-wrap[hidden], .zc-context-button-wrap[hidden] { display:none; }
 			.zc-context-button { width:28px; min-width:28px; min-height:28px; padding:0; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; text-align:center; line-height:0; }
 			.zc-context-button-glyph { display:block; width:14px; height:14px; color:currentColor; transform:translate(0.5px, -0.5px); pointer-events:none; }
-			.zc-context-menu { position:absolute; left:0; bottom:calc(100% + 8px); min-width:220px; max-width:280px; padding:4px; border:1px solid var(--zc-soft-border); border-radius:10px; background:var(--zc-surface-strong); box-shadow:0 8px 18px rgba(0,0,0,0.12); z-index:30; }
-			.zc-context-menu[hidden] { display:none; }
+			.zc-config-button-glyph { display:block; font-size:13px; line-height:1; transform:translateY(-0.5px); pointer-events:none; }
+			.zc-config-button.is-active { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.12)); border-color:color-mix(in srgb, var(--zc-user-border) 32%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 18%, transparent); }
+			.zc-config-menu, .zc-context-menu { position:absolute; left:0; bottom:calc(100% + 8px); min-width:220px; max-width:280px; padding:4px; border:1px solid var(--zc-soft-border); border-radius:10px; background:color-mix(in srgb, var(--zc-bg-1) 96%, #fff 4%); box-shadow:0 8px 18px rgba(0,0,0,0.12); z-index:30; backdrop-filter:none; opacity:1; }
+			.zc-config-menu { width:240px; padding:6px; }
+			.zc-config-menu[hidden], .zc-context-menu[hidden] { display:none; }
+			.zc-config-menu-title { padding:4px 8px 6px; font:700 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+			.zc-config-menu-list { display:flex; flex-direction:column; gap:4px; }
+			.zc-config-menu-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 8px; border-radius:8px; background:transparent; cursor:default; }
+			.zc-config-menu-row:hover { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.08)); }
+			.zc-config-label { color:var(--zc-text); font-size:12px; font-weight:600; }
+			.zc-config-input { width:88px; box-sizing:border-box; min-height:28px; border:1px solid var(--zc-border); border-radius:8px; padding:4px 8px; background:color-mix(in srgb, var(--zc-bg-1) 92%, #fff 8%); color:var(--zc-text); font:600 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align:right; opacity:1; }
+			.zc-config-menu-helper { padding:6px 8px 0; color:var(--zc-subtle); font-size:11px; line-height:1.4; }
+			.zc-config-menu-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; padding:0 4px 4px; }
 			.zc-context-menu-list { display:flex; flex-direction:column; gap:2px; }
 			.zc-context-menu-item { display:flex; align-items:center; width:100%; padding:7px 10px; border:0; border-radius:8px; background:transparent; color:var(--zc-text); text-align:left; font:600 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor:pointer; transition:background 120ms ease, color 120ms ease, transform 100ms ease, box-shadow 120ms ease; }
 			.zc-context-menu-item:hover { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.12)); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 26%, transparent); }
@@ -3179,10 +3363,20 @@ ZoteroCopilot = {
 	buildMessageNode(doc, message, { isEditing = false } = {}) {
 		let wrap = this.html(doc, "div", { className: `zc-message ${message.error ? "zc-message-error" : (message.role === "user" ? "zc-message-user" : "zc-message-assistant")}${isEditing ? " is-editing" : ""}` });
 		let top = this.html(doc, "div", { className: "zc-message-top" });
-		let isRawMarkdown = this.windows.get(doc.defaultView)?.rawMarkdownMessageIDs?.has?.(message.messageID);
+		let state = this.windows.get(doc.defaultView);
+		let isRawMarkdown = state?.rawMarkdownMessageIDs?.has?.(message.messageID);
+		let lastMessageID = state?.currentSession?.data?.messages?.[state.currentSession.data.messages.length - 1]?.messageID || "";
+		let isLastMessage = message.messageID === lastMessageID;
 		top.appendChild(this.html(doc, "div", { className: "zc-message-role", textContent: message.error ? "error" : message.role }));
 		let actions = this.html(doc, "div", { className: "zc-message-actions" });
 		if (!message.error && (message.role === "user" || message.role === "assistant")) {
+			if (isLastMessage) {
+				let deleteButton = this.html(doc, "button", { className: "zc-message-action", type: "button", textContent: "✕" });
+				deleteButton.dataset.action = "delete-last-message";
+				deleteButton.dataset.messageId = message.messageID;
+				deleteButton.setAttribute("title", "删除最后一条消息");
+				actions.appendChild(deleteButton);
+			}
 			let copyButton = this.html(doc, "button", { className: "zc-message-action", type: "button", textContent: "⧉" });
 			copyButton.dataset.action = "copy-message";
 			copyButton.dataset.messageId = message.messageID;
@@ -3601,6 +3795,10 @@ ZoteroCopilot = {
 	async handleMessageAction(state, action, messageID) {
 		let session = state.currentSession;
 		if (!session) return;
+		if (action === "delete-last-message") {
+			await this.deleteLastMessage(state, messageID);
+			return;
+		}
 		if (action === "copy-message" || action === "toggle-raw-markdown") {
 			let index = this.findMessageIndex(session.data.messages, messageID);
 			if (index < 0) return;
@@ -3629,6 +3827,32 @@ ZoteroCopilot = {
 			this.inputFocus(state);
 			this.setStatus(state, action === "edit-assistant" ? "已载入回答，修改后点击 Save" : "已载入该轮消息，可点击 Save 或 Regenerate");
 		}
+	},
+
+	async deleteLastMessage(state, messageID) {
+		let session = state.currentSession;
+		if (!session) return;
+		if (state.isSending) {
+			this.setStatus(state, "生成过程中暂不允许删除最后一条消息", true);
+			return;
+		}
+		let messages = Array.isArray(session.data.messages) ? session.data.messages : [];
+		let lastMessage = messages[messages.length - 1] || null;
+		if (!lastMessage || lastMessage.messageID !== messageID) {
+			this.setStatus(state, "只能删除当前会话的最后一条消息", true);
+			return;
+		}
+		let confirmed = state.window?.confirm?.("确定删除最后一条消息吗？");
+		if (!confirmed) return;
+		session.data.messages = messages.slice(0, -1);
+		session.data.updatedAt = new Date().toISOString();
+		state.rawMarkdownMessageIDs?.delete?.(messageID);
+		if (state.editTargetMessageID === messageID) {
+			this.cancelEdit(state);
+		}
+		await this.saveSession(session);
+		await this.refreshSessions(state, { targetSessionID: session.data.sessionID });
+		this.setStatus(state, "已删除最后一条消息");
 	},
 
 	async runUserTurn(state, { session, userMessage, replaceFromMessageID = null, regenerateExistingUser = false }) {
@@ -4172,7 +4396,7 @@ ZoteroCopilot = {
 			role: "system",
 			content: String(activePrompt?.content || this.DEFAULT_SYSTEM_PROMPT_CONTENT).trim()
 		}];
-		for (let message of (session.messages || []).filter((entry) => !entry.error).slice(-this.MAX_HISTORY_MESSAGES)) {
+		for (let message of (session.messages || []).filter((entry) => !entry.error).slice(-this.getChatHistoryMessageCount())) {
 			if (message.role === "assistant") {
 				messages.push({ role: "assistant", content: message.content || "" });
 				continue;
@@ -4209,12 +4433,13 @@ ZoteroCopilot = {
 			throw new Error("请先在设置中填写供应商 API Base URL、API Key 和模型名");
 		}
 		let extraParams = this.parseOptionalJSONObject(llm.requestJSON, "额外 JSON 参数");
+		let temperature = this.getLLMTemperature();
 		let endpoint = this.resolveAPIEndpoint(llm.apiBaseURL, llm.chatPath || "/chat/completions");
 		if (!allowStream) {
 			return await this.requestChatCompletionNonStream({
 				endpoint,
 				apiKey: llm.apiKey,
-				payload: this.mergeRequestPayload({ model: llm.model, messages, stream: false }, extraParams, ["model", "messages", "stream"]),
+				payload: this.mergeRequestPayload({ model: llm.model, messages, stream: false, temperature }, extraParams, ["model", "messages", "stream", "temperature"]),
 				signal,
 				onDelta
 			});
@@ -4224,7 +4449,7 @@ ZoteroCopilot = {
 			return await this.requestChatCompletionStream({
 				endpoint,
 				apiKey: llm.apiKey,
-				payload: this.mergeRequestPayload({ model: llm.model, messages, stream: true }, extraParams, ["model", "messages", "stream"]),
+				payload: this.mergeRequestPayload({ model: llm.model, messages, stream: true, temperature }, extraParams, ["model", "messages", "stream", "temperature"]),
 				signal,
 				onReader,
 				onDelta: (chunk) => {
@@ -4238,7 +4463,7 @@ ZoteroCopilot = {
 			return await this.requestChatCompletionNonStream({
 				endpoint,
 				apiKey: llm.apiKey,
-				payload: this.mergeRequestPayload({ model: llm.model, messages, stream: false }, extraParams, ["model", "messages", "stream"]),
+				payload: this.mergeRequestPayload({ model: llm.model, messages, stream: false, temperature }, extraParams, ["model", "messages", "stream", "temperature"]),
 				signal,
 				onDelta
 			});
@@ -5080,6 +5305,15 @@ ZoteroCopilot = {
 		Zotero.Prefs.set(this.PREF_BRANCH + name, String(value || ""), true);
 	},
 
+	getNumberPref(name, defaultValue = 0) {
+		let raw = Zotero.Prefs.get(this.PREF_BRANCH + name, true);
+		if (raw === undefined || raw === null || raw === "") {
+			return Number(defaultValue) || 0;
+		}
+		let value = Number(raw);
+		return Number.isFinite(value) ? value : (Number(defaultValue) || 0);
+	},
+
 	getBoolPref(name, defaultValue = false) {
 		let value = Zotero.Prefs.get(this.PREF_BRANCH + name, true);
 		if (value === undefined || value === null || value === "") {
@@ -5090,6 +5324,35 @@ ZoteroCopilot = {
 
 	setBoolPref(name, value) {
 		Zotero.Prefs.set(this.PREF_BRANCH + name, !!value, true);
+	},
+
+	clampChatHistoryMessageCount(value) {
+		let normalized = Math.round(Number(value));
+		if (!Number.isFinite(normalized)) normalized = this.DEFAULT_CHAT_HISTORY_MESSAGE_COUNT;
+		return Math.max(this.MIN_CHAT_HISTORY_MESSAGE_COUNT, Math.min(this.MAX_CHAT_HISTORY_MESSAGE_COUNT, normalized));
+	},
+
+	getChatHistoryMessageCount() {
+		return this.clampChatHistoryMessageCount(this.getNumberPref("chatHistoryMessageCount", this.DEFAULT_CHAT_HISTORY_MESSAGE_COUNT));
+	},
+
+	setChatHistoryMessageCount(value) {
+		Zotero.Prefs.set(this.PREF_BRANCH + "chatHistoryMessageCount", this.clampChatHistoryMessageCount(value), true);
+	},
+
+	clampLLMTemperature(value) {
+		let normalized = Number(value);
+		if (!Number.isFinite(normalized)) normalized = this.DEFAULT_LLM_TEMPERATURE;
+		normalized = Math.round(normalized * 10) / 10;
+		return Math.max(this.MIN_LLM_TEMPERATURE, Math.min(this.MAX_LLM_TEMPERATURE, normalized));
+	},
+
+	getLLMTemperature() {
+		return this.clampLLMTemperature(this.getNumberPref("llmTemperature", this.DEFAULT_LLM_TEMPERATURE));
+	},
+
+	setLLMTemperature(value) {
+		Zotero.Prefs.set(this.PREF_BRANCH + "llmTemperature", this.clampLLMTemperature(value), true);
 	}
 };
 
