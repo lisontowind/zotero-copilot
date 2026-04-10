@@ -1,18 +1,18 @@
 {
-	"addons": {
-		"zotero-copilot@example.com": {
-			"updates": [
-				{
-					"version": "0.3.26",
-					"update_link": "https://github.com/lisontowind/zotero-copilot/releases/latest/download/zotero-copilot.xpi",
-					"applications": {
-						"zotero": {
-							"strict_min_version": "8.0",
-							"strict_max_version": "9.*"
-						}
-					}
-				}
-			]
-		}
-	}
+  "addons": {
+    "zotero-copilot@example.com": {
+      "updates": [
+        {
+          "version": "0.3.26",
+          "update_link": "https://github.com/lisontowind/zotero-copilot/releases/latest/download/zotero-copilot.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "8.0",
+              "strict_max_version": "9.*"
+            }
+          }
+        }
+      ]
+    }
+  }
 }
