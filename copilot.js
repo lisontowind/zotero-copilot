@@ -17,10 +17,13 @@ ZoteroCopilot = {
 	PREF_PANE_ID: "zotero-copilot-prefpane",
 	SOURCE_LIMIT_CHARS: 40000,
 	CONTEXT_LIMIT_CHARS: 120000,
+	TOOL_CONTENT_LIMIT_CHARS: 50000,
 	MAX_HISTORY_MESSAGES: 20,
 	DEFAULT_CHAT_HISTORY_MESSAGE_COUNT: 20,
 	MIN_CHAT_HISTORY_MESSAGE_COUNT: 2,
 	MAX_CHAT_HISTORY_MESSAGE_COUNT: 100,
+	MAX_TOOL_CALL_ROUNDS: 6,
+	DEFAULT_REGULAR_ITEM_CONTEXT_MODE: "fulltext",
 	DEFAULT_LLM_TEMPERATURE: 0.7,
 	MIN_LLM_TEMPERATURE: 0,
 	MAX_LLM_TEMPERATURE: 2,
@@ -105,6 +108,10 @@ ZoteroCopilot = {
 			currentStreaming: null,
 			contextMenuActions: [],
 			isConfigMenuOpen: false,
+			isToolMenuOpen: false,
+			sessionRuntimeOptions: new Map(),
+			pendingToolMenuConfig: null,
+			ignoreToolMenuAutoCloseUntil: 0,
 			toolbarSeparator
 		};
 		this.windows.set(window, state);
@@ -462,6 +469,51 @@ ZoteroCopilot = {
 		configMenu.appendChild(configMenuActions);
 		configButtonWrap.appendChild(configButton);
 		configButtonWrap.appendChild(configMenu);
+		let toolButtonWrap = this.html(doc, "div", { className: "zc-tool-button-wrap" });
+		let toolButton = this.html(doc, "button", {
+			className: "zc-btn zc-btn-ghost zc-context-button zc-tool-button",
+			type: "button",
+			title: "AI 工具",
+			"aria-label": "AI 工具",
+			"aria-expanded": "false"
+		});
+		let toolButtonGlyph = this.html(doc, "span", {
+			className: "zc-tool-button-glyph",
+			textContent: "AI"
+		});
+		toolButton.appendChild(toolButtonGlyph);
+		let toolMenu = this.html(doc, "div", {
+			className: "zc-tool-menu",
+			hidden: "hidden"
+		});
+		let toolMenuTitle = this.html(doc, "div", {
+			className: "zc-config-menu-title",
+			textContent: "AI 工具"
+		});
+		let toolMenuList = this.html(doc, "div", { className: "zc-tool-menu-list" });
+		let toolMenuHelper = this.html(doc, "div", {
+			className: "zc-config-menu-helper",
+			textContent: "当前仅对本会话生效；重新打开后默认关闭。"
+		});
+		let toolMenuActions = this.html(doc, "div", { className: "zc-config-menu-actions" });
+		let toolCancelButton = this.html(doc, "button", {
+			className: "zc-btn zc-btn-ghost",
+			type: "button",
+			textContent: "Cancel"
+		});
+		let toolSaveButton = this.html(doc, "button", {
+			className: "zc-btn zc-btn-primary",
+			type: "button",
+			textContent: "Save"
+		});
+		toolMenu.appendChild(toolMenuTitle);
+		toolMenu.appendChild(toolMenuList);
+		toolMenu.appendChild(toolMenuHelper);
+		toolMenuActions.appendChild(toolCancelButton);
+		toolMenuActions.appendChild(toolSaveButton);
+		toolMenu.appendChild(toolMenuActions);
+		toolButtonWrap.appendChild(toolButton);
+		toolButtonWrap.appendChild(toolMenu);
 		let contextButtonWrap = this.html(doc, "div", { className: "zc-context-button-wrap" });
 		let contextButton = this.html(doc, "button", {
 			className: "zc-btn zc-btn-ghost zc-context-button",
@@ -525,6 +577,7 @@ ZoteroCopilot = {
 		composerSecondaryActions.appendChild(regenerateButton);
 		composerSecondaryActions.appendChild(stopButton);
 		composerFooter.appendChild(configButtonWrap);
+		composerFooter.appendChild(toolButtonWrap);
 		composerFooter.appendChild(contextButtonWrap);
 		composerSubmit.appendChild(composerSecondaryActions);
 		composerSubmit.appendChild(sendButton);
@@ -552,6 +605,13 @@ ZoteroCopilot = {
 			configButton,
 			configButtonGlyph,
 			configMenu,
+			toolButtonWrap,
+			toolButton,
+			toolButtonGlyph,
+			toolMenu,
+			toolMenuList,
+			toolCancelButton,
+			toolSaveButton,
 			configHistoryInput,
 			configTemperatureInput,
 			configCancelButton,
@@ -643,6 +703,12 @@ ZoteroCopilot = {
 			this.toggleConfigMenu(state);
 		};
 		state.configButton.addEventListener("click", state.onConfigButtonClick);
+		state.onToolButtonClick = (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			this.toggleToolMenu(state);
+		};
+		state.toolButton.addEventListener("click", state.onToolButtonClick);
 		state.onConfigMenuPointerDown = (event) => {
 			event.stopPropagation();
 		};
@@ -651,6 +717,37 @@ ZoteroCopilot = {
 			event.stopPropagation();
 		};
 		state.configMenu.addEventListener("click", state.onConfigMenuClick);
+		state.onToolMenuPointerDown = (event) => {
+			event.stopPropagation();
+		};
+		state.toolMenu.addEventListener("pointerdown", state.onToolMenuPointerDown);
+		state.onToolMenuClick = (event) => {
+			event.stopPropagation();
+		};
+		state.toolMenu.addEventListener("click", state.onToolMenuClick);
+		state.onToolMenuActionClick = (event) => {
+			let target = event.target?.closest?.(".zc-tool-toggle-row");
+			if (!target) return;
+			event.preventDefault();
+			event.stopPropagation();
+			let draft = this.getPendingToolMenuConfig(state);
+			let toolID = String(target.dataset.toolId || "").trim();
+			let modeID = String(target.dataset.modeId || "").trim();
+			if (toolID) {
+				draft.enabledTools[toolID] = !draft.enabledTools[toolID];
+				this.renderToolMenu(state);
+				return;
+			}
+			if (modeID) {
+				draft.regularItemContextMode = draft.regularItemContextMode === "summary" ? "fulltext" : "summary";
+				this.renderToolMenu(state);
+			}
+		};
+		state.toolMenuList.addEventListener("click", state.onToolMenuActionClick);
+		state.onToolSaveClick = () => this.saveToolMenuConfig(state);
+		state.toolSaveButton.addEventListener("click", state.onToolSaveClick);
+		state.onToolCancelClick = () => this.hideToolMenu(state);
+		state.toolCancelButton.addEventListener("click", state.onToolCancelClick);
 		state.onConfigSaveClick = () => this.saveSidebarConfig(state);
 		state.configSaveButton.addEventListener("click", state.onConfigSaveClick);
 		state.onConfigCancelClick = () => this.hideConfigMenu(state);
@@ -767,6 +864,13 @@ ZoteroCopilot = {
 			if (state.isConfigMenuOpen && !state.configButtonWrap?.contains?.(event.target)) {
 				this.hideConfigMenu(state);
 			}
+			if (
+				state.isToolMenuOpen
+				&& !state.toolButtonWrap?.contains?.(event.target)
+				&& Date.now() > (state.ignoreToolMenuAutoCloseUntil || 0)
+			) {
+				this.hideToolMenu(state);
+			}
 			if (state.isProfileMenuOpen && !this.isEventInside(event, ".zc-profile-menu") && !this.isEventInside(event, ".zc-profile-button")) {
 				this.hideProfileMenu(state);
 			}
@@ -777,6 +881,7 @@ ZoteroCopilot = {
 			this.hideProfileMenu(state);
 		};
 		state.window.addEventListener("blur", state.onWindowBlur, true);
+		this.renderToolMenu(state);
 		this.updateContextButtonVisibility(state);
 		this.setComposerInputHeight(state, state.input.offsetHeight || 96);
 	},
@@ -798,8 +903,14 @@ ZoteroCopilot = {
 		state.input?.removeEventListener("keydown", state.onInputKeydown);
 		state.contextButton?.removeEventListener("click", state.onContextButtonClick);
 		state.configButton?.removeEventListener("click", state.onConfigButtonClick);
+		state.toolButton?.removeEventListener("click", state.onToolButtonClick);
 		state.configMenu?.removeEventListener("pointerdown", state.onConfigMenuPointerDown);
 		state.configMenu?.removeEventListener("click", state.onConfigMenuClick);
+		state.toolMenu?.removeEventListener("pointerdown", state.onToolMenuPointerDown);
+		state.toolMenu?.removeEventListener("click", state.onToolMenuClick);
+		state.toolMenuList?.removeEventListener("click", state.onToolMenuActionClick);
+		state.toolSaveButton?.removeEventListener("click", state.onToolSaveClick);
+		state.toolCancelButton?.removeEventListener("click", state.onToolCancelClick);
 		state.configSaveButton?.removeEventListener("click", state.onConfigSaveClick);
 		state.configCancelButton?.removeEventListener("click", state.onConfigCancelClick);
 		state.contextMenuList?.removeEventListener("click", state.onContextMenuClick);
@@ -982,6 +1093,7 @@ ZoteroCopilot = {
 
 	renderContextMenu(state, actions) {
 		this.hideConfigMenu(state);
+		this.hideToolMenu(state);
 		state.contextMenuActions = actions;
 		state.contextMenuList.textContent = "";
 		for (let action of actions) {
@@ -1005,6 +1117,7 @@ ZoteroCopilot = {
 	showConfigMenu(state) {
 		if (!state?.configMenu) return;
 		this.hideContextMenu(state);
+		this.hideToolMenu(state);
 		state.configHistoryInput.value = String(this.getChatHistoryMessageCount());
 		state.configTemperatureInput.value = this.getLLMTemperature().toFixed(1);
 		state.configMenu.hidden = false;
@@ -1029,6 +1142,94 @@ ZoteroCopilot = {
 		this.showConfigMenu(state);
 	},
 
+	renderToolMenu(state) {
+		if (!state?.toolMenuList) return;
+		let draft = this.getPendingToolMenuConfig(state);
+		state.toolMenuList.textContent = "";
+		let modeRow = this.html(state.doc, "button", {
+			className: `zc-tool-menu-row zc-tool-toggle-row${draft.regularItemContextMode === "summary" ? " is-selected" : ""}`,
+			type: "button"
+		});
+		modeRow.dataset.modeId = "summary";
+		let modeHeader = this.html(state.doc, "span", { className: "zc-tool-menu-text" });
+		let modeTitle = this.html(state.doc, "span", {
+			className: "zc-tool-menu-name",
+			textContent: "父文献条目"
+		});
+		let modeDesc = this.html(state.doc, "span", {
+			className: "zc-tool-menu-desc",
+			textContent: draft.regularItemContextMode === "summary"
+				? "当前为 AI 总结。关闭后改为 MinerU 全文。"
+				: "当前为 MinerU 全文。打开后改为 AI 总结。"
+		});
+		modeHeader.appendChild(modeTitle);
+		modeHeader.appendChild(modeDesc);
+		modeRow.appendChild(modeHeader);
+		modeRow.appendChild(this.buildToolToggleSwitch(state.doc, draft.regularItemContextMode === "summary"));
+		state.toolMenuList.appendChild(modeRow);
+		for (let tool of this.getToolMenuEntries(state.window, state)) {
+			let row = this.html(state.doc, "button", {
+				className: `zc-tool-menu-row zc-tool-toggle-row${tool.available ? "" : " is-disabled"}${draft.enabledTools[tool.id] ? " is-selected" : ""}`,
+				type: "button"
+			});
+			row.dataset.toolId = tool.id;
+			row.disabled = !tool.available;
+			let textWrap = this.html(state.doc, "span", { className: "zc-tool-menu-text" });
+			let title = this.html(state.doc, "span", {
+				className: "zc-tool-menu-name",
+				textContent: tool.label
+			});
+			let desc = this.html(state.doc, "span", {
+				className: "zc-tool-menu-desc",
+				textContent: tool.available ? tool.description : (tool.unavailableReason || "当前不可用")
+			});
+			let switchEl = this.buildToolToggleSwitch(state.doc, !!draft.enabledTools[tool.id]);
+			textWrap.appendChild(title);
+			textWrap.appendChild(desc);
+			row.appendChild(textWrap);
+			row.appendChild(switchEl);
+			state.toolMenuList.appendChild(row);
+		}
+	},
+
+	buildToolToggleSwitch(doc, enabled) {
+		let wrap = this.html(doc, "span", {
+			className: `zc-tool-switch${enabled ? " is-on" : ""}`,
+			"aria-hidden": "true"
+		});
+		wrap.appendChild(this.html(doc, "span", { className: "zc-tool-switch-thumb" }));
+		return wrap;
+	},
+
+	showToolMenu(state) {
+		if (!state?.toolMenu) return;
+		this.hideConfigMenu(state);
+		this.hideContextMenu(state);
+		state.pendingToolMenuConfig = this.cloneConversationRuntimeConfig(this.getConversationRuntimeConfig(state));
+		this.renderToolMenu(state);
+		state.toolMenu.hidden = false;
+		state.isToolMenuOpen = true;
+		state.toolButton?.classList?.add("is-active");
+		state.toolButton?.setAttribute?.("aria-expanded", "true");
+	},
+
+	hideToolMenu(state) {
+		if (!state?.toolMenu) return;
+		state.toolMenu.hidden = true;
+		state.isToolMenuOpen = false;
+		state.pendingToolMenuConfig = null;
+		state.toolButton?.classList?.remove("is-active");
+		state.toolButton?.setAttribute?.("aria-expanded", "false");
+	},
+
+	toggleToolMenu(state) {
+		if (state?.isToolMenuOpen) {
+			this.hideToolMenu(state);
+			return;
+		}
+		this.showToolMenu(state);
+	},
+
 	saveSidebarConfig(state) {
 		let nextHistoryCount = this.clampChatHistoryMessageCount(state?.configHistoryInput?.value);
 		let nextTemperature = this.clampLLMTemperature(state?.configTemperatureInput?.value);
@@ -1036,7 +1237,19 @@ ZoteroCopilot = {
 		this.setLLMTemperature(nextTemperature);
 		if (state?.configHistoryInput) state.configHistoryInput.value = String(nextHistoryCount);
 		if (state?.configTemperatureInput) state.configTemperatureInput.value = nextTemperature.toFixed(1);
+		this.hideConfigMenu(state);
 		this.setStatus(state, `已更新聊天参数：纳入 ${nextHistoryCount} 条对话，温度 ${nextTemperature.toFixed(1)}`);
+	},
+
+	saveToolMenuConfig(state) {
+		let sessionConfig = this.getConversationRuntimeConfig(state);
+		let draft = this.getPendingToolMenuConfig(state);
+		sessionConfig.enabledTools = { ...draft.enabledTools };
+		sessionConfig.regularItemContextMode = this.normalizeRegularItemContextMode(draft.regularItemContextMode);
+		this.hideToolMenu(state);
+		let enabledTools = this.getEnabledToolDefinitions(state.window, state).map((entry) => entry.label);
+		let modeLabel = sessionConfig.regularItemContextMode === "summary" ? "AI 总结" : "MinerU 全文";
+		this.setStatus(state, enabledTools.length ? `已应用工具设置：${enabledTools.join("、")}；父文献条目=${modeLabel}` : `已应用工具设置：全部关闭；父文献条目=${modeLabel}`);
 	},
 
 	async activateContextMenuAction(state, actionID) {
@@ -3049,23 +3262,37 @@ ZoteroCopilot = {
 			.zc-formula-fallback { font-family:Consolas, "SFMono-Regular", monospace; white-space:pre-wrap; }
 			.zc-composer { margin-top:0; min-width:0; }
 			.zc-input-wrap { position:relative; align-items:flex-start; }
-			.zc-config-button-wrap, .zc-context-button-wrap { position:relative; flex:0 0 auto; }
-			.zc-config-button-wrap[hidden], .zc-context-button-wrap[hidden] { display:none; }
+			.zc-config-button-wrap, .zc-tool-button-wrap, .zc-context-button-wrap { position:relative; flex:0 0 auto; }
+			.zc-config-button-wrap[hidden], .zc-tool-button-wrap[hidden], .zc-context-button-wrap[hidden] { display:none; }
 			.zc-context-button { width:28px; min-width:28px; min-height:28px; padding:0; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; text-align:center; line-height:0; }
 			.zc-context-button-glyph { display:block; width:14px; height:14px; color:currentColor; transform:translate(0.5px, -0.5px); pointer-events:none; }
 			.zc-config-button-glyph { display:block; font-size:13px; line-height:1; transform:translateY(-0.5px); pointer-events:none; }
-			.zc-config-button.is-active { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.12)); border-color:color-mix(in srgb, var(--zc-user-border) 32%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 18%, transparent); }
-			.zc-config-menu, .zc-context-menu { position:absolute; left:0; bottom:calc(100% + 8px); min-width:220px; max-width:280px; padding:4px; border:1px solid var(--zc-soft-border); border-radius:10px; background:color-mix(in srgb, var(--zc-bg-1) 96%, #fff 4%); box-shadow:0 8px 18px rgba(0,0,0,0.12); z-index:30; backdrop-filter:none; opacity:1; }
+			.zc-tool-button-glyph { display:block; font:700 10px/1 "Segoe UI", sans-serif; letter-spacing:0.02em; transform:translateY(-0.5px); pointer-events:none; }
+			.zc-config-button.is-active, .zc-tool-button.is-active { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.12)); border-color:color-mix(in srgb, var(--zc-user-border) 32%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 18%, transparent); }
+			.zc-config-menu, .zc-tool-menu, .zc-context-menu { position:absolute; left:0; bottom:calc(100% + 8px); min-width:220px; max-width:280px; padding:4px; border:1px solid var(--zc-soft-border); border-radius:10px; background:color-mix(in srgb, var(--zc-bg-1) 96%, #fff 4%); box-shadow:0 8px 18px rgba(0,0,0,0.12); z-index:30; backdrop-filter:none; opacity:1; }
 			.zc-config-menu { width:240px; padding:6px; }
-			.zc-config-menu[hidden], .zc-context-menu[hidden] { display:none; }
+			.zc-config-menu[hidden], .zc-tool-menu[hidden], .zc-context-menu[hidden] { display:none; }
 			.zc-config-menu-title { padding:4px 8px 6px; font:700 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 			.zc-config-menu-list { display:flex; flex-direction:column; gap:4px; }
 			.zc-config-menu-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 8px; border-radius:8px; background:transparent; cursor:default; }
 			.zc-config-menu-row:hover { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.08)); }
 			.zc-config-label { color:var(--zc-text); font-size:12px; font-weight:600; }
 			.zc-config-input { width:88px; box-sizing:border-box; min-height:28px; border:1px solid var(--zc-border); border-radius:8px; padding:4px 8px; background:color-mix(in srgb, var(--zc-bg-1) 92%, #fff 8%); color:var(--zc-text); font:600 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align:right; opacity:1; }
+			.zc-config-select { width:120px; text-align:left; }
 			.zc-config-menu-helper { padding:6px 8px 0; color:var(--zc-subtle); font-size:11px; line-height:1.4; }
 			.zc-config-menu-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; padding:0 4px 4px; }
+			.zc-tool-menu-list { display:flex; flex-direction:column; gap:8px; padding:2px 0; }
+			.zc-tool-menu-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:center; column-gap:14px; width:100%; min-height:56px; padding:10px 12px; border:0; border-radius:10px; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+			.zc-tool-toggle-row:hover { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.08)); }
+			.zc-tool-toggle-row.is-selected { background:color-mix(in srgb, var(--zc-surface) 68%, rgba(64,101,161,0.12)); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 22%, transparent); }
+			.zc-tool-menu-row.is-disabled { opacity:0.65; cursor:not-allowed; }
+			.zc-tool-menu-text { display:flex; flex:1 1 auto; flex-direction:column; gap:4px; min-width:0; overflow:hidden; padding-right:2px; }
+			.zc-tool-menu-name { color:var(--zc-text); font-size:12px; line-height:1.4; font-weight:600; }
+			.zc-tool-menu-desc { color:var(--zc-subtle); font-size:11px; line-height:1.5; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
+			.zc-tool-switch { position:relative; justify-self:center; align-self:center; width:34px; min-width:34px; height:20px; border-radius:999px; background:color-mix(in srgb, var(--zc-surface-strong) 88%, #000 6%); border:1px solid var(--zc-soft-border); transition:background 120ms ease, border-color 120ms ease; }
+			.zc-tool-switch.is-on { background:color-mix(in srgb, var(--zc-user) 78%, rgba(64,101,161,0.28)); border-color:color-mix(in srgb, var(--zc-user-border) 70%, transparent); }
+			.zc-tool-switch-thumb { position:absolute; top:1px; left:1px; width:16px; height:16px; border-radius:999px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.18); transition:transform 120ms ease; }
+			.zc-tool-switch.is-on .zc-tool-switch-thumb { transform:translateX(14px); }
 			.zc-context-menu-list { display:flex; flex-direction:column; gap:2px; }
 			.zc-context-menu-item { display:flex; align-items:center; width:100%; padding:7px 10px; border:0; border-radius:8px; background:transparent; color:var(--zc-text); text-align:left; font:600 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor:pointer; transition:background 120ms ease, color 120ms ease, transform 100ms ease, box-shadow 120ms ease; }
 			.zc-context-menu-item:hover { background:color-mix(in srgb, var(--zc-surface) 72%, rgba(64,101,161,0.12)); box-shadow:0 0 0 1px color-mix(in srgb, var(--zc-user-border) 26%, transparent); }
@@ -3569,6 +3796,54 @@ ZoteroCopilot = {
 		this.setStatus(state, parts.join("；") || "没有可添加的上下文", skipped.length > 0 && !addedCount);
 	},
 
+	normalizeItemsToParentRegularItems(items) {
+		let parents = [];
+		let seenParentIDs = new Set();
+		for (let item of items || []) {
+			let parentItem = null;
+			if (item?.isRegularItem?.()) {
+				parentItem = item;
+			}
+			else if (item?.isAttachment?.() || item?.isNote?.()) {
+				let parentID = item.parentItemID || item.parentID || null;
+				parentItem = parentID ? Zotero.Items.get(parentID) : null;
+			}
+			if (!parentItem?.isRegularItem?.()) continue;
+			if (seenParentIDs.has(parentItem.id)) continue;
+			seenParentIDs.add(parentItem.id);
+			parents.push(parentItem);
+		}
+		return parents;
+	},
+
+	async addPendingSummariesToComposer(state, items) {
+		let parentItems = this.normalizeItemsToParentRegularItems(items);
+		if (!parentItems.length) {
+			this.setStatus(state, "多选中没有可总结的文献条目", true);
+			return;
+		}
+		let addedCount = 0;
+		let skipped = [];
+		this.setStatus(state, `正在为 ${parentItems.length} 篇文献准备 AI 总结上下文...`);
+		for (let parentItem of parentItems) {
+			let result = await this.resolveSummaryContextSource(parentItem, state.window).catch((e) => ({ ok: false, reason: e.message || String(e) }));
+			if (!result?.ok) {
+				skipped.push(`${this.getItemLabel(parentItem)}：${result?.reason || "无法生成总结"}`);
+				continue;
+			}
+			if ((state.pendingSourceRefs || []).some((entry) => entry.sourceID === result.sourceRef.sourceID)) {
+				continue;
+			}
+			state.pendingSourceRefs.push(result.sourceRef);
+			addedCount += 1;
+		}
+		this.renderPendingSources(state);
+		let parts = [];
+		if (addedCount) parts.push(`已添加 ${addedCount} 篇文献总结`);
+		if (skipped.length) parts.push(`跳过 ${skipped.length} 篇：${skipped[0]}`);
+		this.setStatus(state, parts.join("；") || "没有可添加的总结上下文", skipped.length > 0 && !addedCount);
+	},
+
 	removePendingSource(state, sourceID) {
 		state.pendingSourceRefs = (state.pendingSourceRefs || []).filter((entry) => entry.sourceID !== sourceID);
 		this.renderPendingSources(state);
@@ -3926,6 +4201,7 @@ ZoteroCopilot = {
 			let reply = await this.requestChatCompletion({
 				session: session.data,
 				signal: state.requestAbortController?.signal,
+				state,
 				onReader: (reader) => {
 					state.currentStreamReader = reader || null;
 				},
@@ -4428,6 +4704,301 @@ ZoteroCopilot = {
 		return parts.join("\n\n");
 	},
 
+	getToolExecutionWindow() {
+		for (let window of Zotero.getMainWindows?.() || []) {
+			if (window?.ZoteroPane) return window;
+		}
+		return null;
+	},
+
+	parseToolArguments(rawArguments) {
+		let normalized = String(rawArguments || "").trim();
+		if (!normalized) return {};
+		try {
+			let parsed = JSON.parse(normalized);
+			return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+		}
+		catch (e) {
+			throw new Error(`工具参数不是合法 JSON：${e.message || e}`);
+		}
+	},
+
+	normalizeChatMessageContent(content) {
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content.map((part) => {
+				if (typeof part === "string") return part;
+				if (part?.type === "text") return String(part.text || "");
+				return String(part?.text || part?.content || "");
+			}).join("");
+		}
+		return String(content || "");
+	},
+
+	async requestChatCompletionJSON({ endpoint, apiKey, payload, signal }) {
+		let response = await fetch(endpoint, {
+			method: "POST",
+			headers: {
+				"Accept": "application/json",
+				"Content-Type": "application/json",
+				"Authorization": "Bearer " + apiKey
+			},
+			body: JSON.stringify(payload),
+			signal
+		});
+		let text = await response.text();
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}: ${text.slice(0, 1000)}`);
+		}
+		try {
+			return JSON.parse(text);
+		}
+		catch (_e) {
+			throw new Error("LLM 返回了无法解析的 JSON");
+		}
+	},
+
+	async requestMessagesCompletionWithTools({ llm, messages, signal, onDelta, window = null, state = null }) {
+		if (!llm?.apiBaseURL || !llm?.apiKey || !llm?.model) {
+			throw new Error("请先在设置中填写供应商 API Base URL、API Key 和模型名");
+		}
+		let tools = this.buildEnabledToolDefinitions(window, state);
+		if (!tools.length) {
+			return await this.requestMessagesCompletion({ llm, messages, signal, onDelta, allowStream: true });
+		}
+		let extraParams = this.parseOptionalJSONObject(llm.requestJSON, "额外 JSON 参数");
+		let temperature = this.getLLMTemperature();
+		let endpoint = this.resolveAPIEndpoint(llm.apiBaseURL, llm.chatPath || "/chat/completions");
+		let conversation = (messages || []).map((message) => ({ ...message }));
+		for (let round = 0; round < this.MAX_TOOL_CALL_ROUNDS; round++) {
+			let payload = this.mergeRequestPayload(
+				{
+					model: llm.model,
+					messages: conversation,
+					stream: false,
+					temperature,
+					tools,
+					tool_choice: "auto"
+				},
+				extraParams,
+				["model", "messages", "stream", "temperature", "tools", "tool_choice"]
+			);
+			let json = await this.requestChatCompletionJSON({
+				endpoint,
+				apiKey: llm.apiKey,
+				payload,
+				signal
+			});
+			let assistantMessage = json?.choices?.[0]?.message;
+			if (!assistantMessage) {
+				throw new Error("模型返回为空");
+			}
+			let reasoning = this.normalizeChatMessageContent(
+				assistantMessage.reasoning
+				|| assistantMessage.reasoning_content
+				|| assistantMessage.reasoningContent
+			);
+			if (reasoning) {
+				onDelta?.({ type: "reasoning", text: reasoning });
+			}
+			let content = this.normalizeChatMessageContent(assistantMessage.content);
+			let toolCalls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
+			conversation.push({
+				role: "assistant",
+				content: content || "",
+				tool_calls: toolCalls
+			});
+			if (!toolCalls.length) {
+				if (!content.trim()) throw new Error("模型返回为空");
+				onDelta?.({ type: "content", text: content });
+				return content;
+			}
+			for (let toolCall of toolCalls) {
+				let toolResult = await this.runToolCall(toolCall, { window });
+				conversation.push({
+					role: "tool",
+					tool_call_id: String(toolCall?.id || ""),
+					content: JSON.stringify(toolResult, null, 2)
+				});
+			}
+		}
+		throw new Error("工具调用轮数超过上限，已停止");
+	},
+
+	async runToolCall(toolCall, { window = null } = {}) {
+		let functionName = String(toolCall?.function?.name || "").trim();
+		let args = this.parseToolArguments(toolCall?.function?.arguments || "");
+		switch (functionName) {
+			case "search_library_items":
+				return await this.runSearchLibraryItemsTool(args, { window });
+			case "get_article_content":
+				return await this.runGetArticleContentTool(args, { window });
+			default:
+				throw new Error(`未知工具：${functionName || "未命名工具"}`);
+		}
+	},
+
+	getActiveLibraryID(window = null) {
+		let candidateWindows = [];
+		if (window?.ZoteroPane) candidateWindows.push(window);
+		for (let nextWindow of Zotero.getMainWindows?.() || []) {
+			if (nextWindow?.ZoteroPane && !candidateWindows.includes(nextWindow)) {
+				candidateWindows.push(nextWindow);
+			}
+		}
+		for (let candidate of candidateWindows) {
+			let selectedItems = candidate.ZoteroPane?.getSelectedItems?.() || [];
+			let selectedRegular = selectedItems.find((item) => item?.libraryID && item.isRegularItem?.());
+			if (selectedRegular?.libraryID) return selectedRegular.libraryID;
+			let selectedItem = this.getSelectedItem(candidate);
+			if (selectedItem?.libraryID) return selectedItem.libraryID;
+			let selectedLibraryID = candidate.ZoteroPane?.getSelectedLibraryID?.();
+			if (Number.isFinite(selectedLibraryID) && selectedLibraryID > 0) return selectedLibraryID;
+		}
+		return Zotero.Libraries?.userLibraryID || 1;
+	},
+
+	makeItemRef(item) {
+		return item ? `${item.libraryID}:${item.key}` : "";
+	},
+
+	resolveItemRef(itemRef) {
+		let raw = String(itemRef || "").trim();
+		let match = raw.match(/^(\d+):([A-Z0-9]+)$/i);
+		if (!match) {
+			throw new Error("itemRef 格式必须是 libraryID:key");
+		}
+		let libraryID = parseInt(match[1], 10);
+		let key = match[2];
+		let item = Zotero.Items.getByLibraryAndKey?.(libraryID, key);
+		if (!item || item.deleted) {
+			throw new Error(`找不到条目：${raw}`);
+		}
+		if (!item.isRegularItem?.()) {
+			throw new Error("itemRef 必须指向文献父条目");
+		}
+		return item;
+	},
+
+	scoreLibrarySearchResult(item, { query = "", title = "", author = "", year = "" } = {}) {
+		let score = 0;
+		let normalizedQuery = String(query || "").trim().toLowerCase();
+		let normalizedTitle = String(title || "").trim().toLowerCase();
+		let normalizedAuthor = String(author || "").trim().toLowerCase();
+		let normalizedYear = String(year || "").trim().toLowerCase();
+		let itemTitle = String(item?.getField?.("title") || "").trim().toLowerCase();
+		let itemYear = String(item?.getField?.("date") || "").trim().toLowerCase();
+		let creators = (item?.getCreators?.() || []).map((creator) => `${creator.firstName || ""} ${creator.lastName || ""}`.trim().toLowerCase()).filter(Boolean);
+		let joinedCreators = creators.join(" ");
+		if (normalizedTitle) {
+			if (itemTitle === normalizedTitle) score += 120;
+			else if (itemTitle.includes(normalizedTitle)) score += 80;
+		}
+		if (normalizedAuthor && joinedCreators.includes(normalizedAuthor)) score += 40;
+		if (normalizedYear && itemYear.includes(normalizedYear)) score += 20;
+		if (normalizedQuery) {
+			if (itemTitle === normalizedQuery) score += 100;
+			else if (itemTitle.includes(normalizedQuery)) score += 60;
+			if (joinedCreators.includes(normalizedQuery)) score += 30;
+			if (itemYear.includes(normalizedQuery)) score += 10;
+		}
+		return score;
+	},
+
+	async searchRegularItemsInLibrary({ query = "", title = "", author = "", year = "", limit = 5 } = {}, window = null) {
+		let search = new Zotero.Search();
+		search.libraryID = this.getActiveLibraryID(window);
+		let normalizedQuery = String(query || "").trim();
+		let normalizedTitle = String(title || "").trim();
+		let normalizedAuthor = String(author || "").trim();
+		let normalizedYear = String(year || "").trim();
+		if (!normalizedQuery && !normalizedTitle && !normalizedAuthor && !normalizedYear) {
+			throw new Error("至少需要提供 query、title、author、year 中的一个");
+		}
+		if (normalizedQuery) {
+			search.addCondition("quicksearch-titleCreatorYear", "contains", normalizedQuery);
+		}
+		if (normalizedTitle) {
+			search.addCondition("title", "contains", normalizedTitle);
+		}
+		if (normalizedAuthor) {
+			search.addCondition("creator", "contains", normalizedAuthor);
+		}
+		if (normalizedYear) {
+			search.addCondition("date", "contains", normalizedYear);
+		}
+		let ids = await search.search();
+		let items = ids
+			.map((id) => Zotero.Items.get(id))
+			.filter((item) => item && !item.deleted && item.isRegularItem?.());
+		let scored = items
+			.map((item) => ({
+				item,
+				score: this.scoreLibrarySearchResult(item, {
+					query: normalizedQuery,
+					title: normalizedTitle,
+					author: normalizedAuthor,
+					year: normalizedYear
+				})
+			}))
+			.sort((a, b) => {
+				if (b.score !== a.score) return b.score - a.score;
+				return String(a.item.getField?.("title") || "").localeCompare(String(b.item.getField?.("title") || ""));
+			})
+			.slice(0, Math.max(1, Math.min(10, parseInt(limit, 10) || 5)));
+		return scored.map(({ item }) => {
+			let creators = (item.getCreators?.() || []).map((creator) => {
+				let fullName = [creator.firstName || "", creator.lastName || ""].join(" ").trim();
+				return fullName || creator.name || "";
+			}).filter(Boolean);
+			return {
+				itemRef: this.makeItemRef(item),
+				title: String(item.getField?.("title") || "").trim() || "Untitled",
+				authors: creators,
+				year: String(item.getField?.("date") || "").match(/\b\d{4}\b/)?.[0] || "",
+				hasPDF: !!this.findFirstPDFAttachment(item),
+				hasMineruParse: !!this.findMineruMarkdownAttachment(item),
+				hasMineruSummary: !!this.findMineruSummaryNote(item)
+			};
+		});
+	},
+
+	async runSearchLibraryItemsTool(args, { window = null } = {}) {
+		let results = await this.searchRegularItemsInLibrary(args, window);
+		return {
+			ok: true,
+			count: results.length,
+			results
+		};
+	},
+
+	async runGetArticleContentTool(args, { window = null } = {}) {
+		let item = this.resolveItemRef(args?.itemRef);
+		let markdownAttachment = await this.ensureMineruMarkdownAttachment(item, window || this.getToolExecutionWindow());
+		let path = await this.getAttachmentFilePath(markdownAttachment);
+		if (!path) {
+			throw new Error("Markdown 附件文件不存在");
+		}
+		let rawText = await IOUtils.readUTF8(path);
+		let content = this.compactWhitespace(this.removeLocalImageReferences(rawText));
+		if (!content) {
+			throw new Error("文章内容为空");
+		}
+		let truncated = false;
+		if (content.length > this.TOOL_CONTENT_LIMIT_CHARS) {
+			content = this.limitText(content, this.TOOL_CONTENT_LIMIT_CHARS);
+			truncated = true;
+		}
+		return {
+			ok: true,
+			itemRef: this.makeItemRef(item),
+			title: this.getItemLabel(item),
+			parser: "mineru-markdown",
+			truncated,
+			content
+		};
+	},
+
 	async requestMessagesCompletion({ llm, messages, onDelta, signal, onReader, allowStream = true }) {
 		if (!llm?.apiBaseURL || !llm?.apiKey || !llm?.model) {
 			throw new Error("请先在设置中填写供应商 API Base URL、API Key 和模型名");
@@ -4470,10 +5041,23 @@ ZoteroCopilot = {
 		}
 	},
 
-	async requestChatCompletion({ session, onDelta, signal, onReader }) {
+	async requestChatCompletion({ session, onDelta, signal, onReader, state = null }) {
+		let llm = this.getLLMSettings();
+		let messages = this.buildChatMessages(session);
+		let toolWindow = this.getToolExecutionWindow();
+		if (this.buildEnabledToolDefinitions(toolWindow, state).length) {
+			return await this.requestMessagesCompletionWithTools({
+				llm,
+				messages,
+				onDelta,
+				signal,
+				window: toolWindow,
+				state
+			});
+		}
 		return await this.requestMessagesCompletion({
-			llm: this.getLLMSettings(),
-			messages: this.buildChatMessages(session),
+			llm,
+			messages,
 			onDelta,
 			signal,
 			onReader,
@@ -4691,6 +5275,9 @@ ZoteroCopilot = {
 	},
 
 	async resolveRegularItemSource(item, window) {
+		if (this.getWindowConversationRuntimeConfig(window).regularItemContextMode === "summary") {
+			return await this.resolveSummaryContextSource(item, window);
+		}
 		let mineruAttachment = this.findMineruMarkdownAttachment(item);
 		if (mineruAttachment) {
 			let markdownResult = await this.resolveMarkdownSource(mineruAttachment);
@@ -4753,6 +5340,118 @@ ZoteroCopilot = {
 			}
 		}
 		return null;
+	},
+
+	findMineruSummaryNote(parentItem) {
+		if (!parentItem?.isRegularItem?.()) return null;
+		let noteIDs = parentItem.getNotes?.() || [];
+		for (let noteID of noteIDs) {
+			let note = Zotero.Items.get(noteID);
+			if (!note?.isNote?.()) continue;
+			let tags = note.getTags?.() || [];
+			if (tags.some((tag) => tag.tag === "#MinerU-Summary")) {
+				return note;
+			}
+		}
+		return null;
+	},
+
+	async ensureMineruMarkdownAttachment(parentItem, window) {
+		let existing = this.findMineruMarkdownAttachment(parentItem);
+		if (existing) return existing;
+		let mineru = this.getMineruRuntime(window);
+		if (!mineru) {
+			throw new Error("需要先安装并启用 zotero-mineru 插件");
+		}
+		let settings = mineru.getSettings?.();
+		if (!settings?.apiToken) {
+			throw new Error("zotero-mineru 尚未配置 API Token");
+		}
+		let attachment = this.findFirstPDFAttachment(parentItem);
+		if (!attachment) {
+			throw new Error("该文献下没有可用 PDF 附件");
+		}
+		let parsedResult = await mineru.parseAttachmentWithMineru(attachment, settings, {});
+		if (typeof mineru.saveResultAsMarkdownAttachment !== "function") {
+			throw new Error("zotero-mineru 未暴露保存 Markdown 的接口");
+		}
+		await mineru.saveResultAsMarkdownAttachment({
+			attachment,
+			parentItem,
+			parsedResult,
+			settings
+		});
+		let saved = this.findMineruMarkdownAttachment(parentItem);
+		if (!saved) {
+			throw new Error("MinerU 解析已完成，但未找到保存后的 Markdown 附件");
+		}
+		return saved;
+	},
+
+	async buildMineruSummaryPlainText(markdownAttachment) {
+		let filePath = await this.getAttachmentFilePath(markdownAttachment);
+		if (!filePath) {
+			throw new Error("MinerU Markdown 附件文件不存在");
+		}
+		let fileBytes = await IOUtils.read(filePath);
+		let plainText = new TextDecoder("utf-8").decode(fileBytes);
+		if (plainText.length > 60000) {
+			plainText = plainText.slice(0, 60000);
+		}
+		if (!plainText.trim()) {
+			throw new Error("MinerU 解析内容为空");
+		}
+		return plainText;
+	},
+
+	async ensureMineruSummaryNote(parentItem, window) {
+		let existing = this.findMineruSummaryNote(parentItem);
+		if (existing) return existing;
+		let mineru = this.getMineruRuntime(window);
+		if (!mineru) {
+			throw new Error("需要先安装并启用 zotero-mineru 插件");
+		}
+		if (typeof mineru.getLLMSettings !== "function" || typeof mineru.callLLMForSummary !== "function" || typeof mineru.saveSummaryAsNote !== "function") {
+			throw new Error("zotero-mineru 未暴露 AI 总结接口");
+		}
+		let llmSettings = mineru.getLLMSettings();
+		if (!llmSettings?.apiBaseURL || !llmSettings?.apiKey || !llmSettings?.model) {
+			throw new Error("zotero-mineru 尚未配置完整的 LLM 设置");
+		}
+		let markdownAttachment = await this.ensureMineruMarkdownAttachment(parentItem, window);
+		let plainText = await this.buildMineruSummaryPlainText(markdownAttachment);
+		let summary = await mineru.callLLMForSummary(plainText, llmSettings, llmSettings.summaryLanguage);
+		await mineru.saveSummaryAsNote({
+			parentItem,
+			summaryText: summary
+		});
+		let saved = this.findMineruSummaryNote(parentItem);
+		if (!saved) {
+			throw new Error("AI 总结已生成，但未找到保存后的总结笔记");
+		}
+		return saved;
+	},
+
+	async resolveSummaryContextSource(parentItem, window) {
+		if (!parentItem?.isRegularItem?.()) {
+			return { ok: false, reason: "仅支持文献父条目总结" };
+		}
+		let note = this.findMineruSummaryNote(parentItem);
+		if (!note) {
+			note = await this.ensureMineruSummaryNote(parentItem, window);
+		}
+		let noteResult = await this.resolveNoteSource(note);
+		if (!noteResult?.ok) {
+			return noteResult;
+		}
+		noteResult.sourceRef.sourceID = `${parentItem.libraryID}:${parentItem.key}:regular-summary`;
+		noteResult.sourceRef.itemKey = parentItem.key;
+		noteResult.sourceRef.parentItemKey = parentItem.key;
+		noteResult.sourceRef.label = this.getItemLabel(parentItem);
+		noteResult.sourceRef.resolutionKind = "regular-item-summary";
+		noteResult.sourceRef.parser = "mineru-summary-note";
+		noteResult.sourceRef.textSnapshot = this.limitText(noteResult.sourceRef.textSnapshot || "", this.SOURCE_LIMIT_CHARS);
+		return noteResult;
 	},
 
 	async extractPDFTextWithFallback(attachment, parentItem, window) {
@@ -5324,6 +6023,119 @@ ZoteroCopilot = {
 
 	setBoolPref(name, value) {
 		Zotero.Prefs.set(this.PREF_BRANCH + name, !!value, true);
+	},
+
+	createDefaultConversationRuntimeConfig() {
+		return {
+			enabledTools: {
+				search_library_items: false,
+				get_article_content: false
+			},
+			regularItemContextMode: this.DEFAULT_REGULAR_ITEM_CONTEXT_MODE
+		};
+	},
+
+	cloneConversationRuntimeConfig(config = null) {
+		let base = config || this.createDefaultConversationRuntimeConfig();
+		return {
+			enabledTools: {
+				search_library_items: !!base?.enabledTools?.search_library_items,
+				get_article_content: !!base?.enabledTools?.get_article_content
+			},
+			regularItemContextMode: this.normalizeRegularItemContextMode(base?.regularItemContextMode)
+		};
+	},
+
+	getConversationRuntimeConfig(state, sessionID = null) {
+		let resolvedSessionID = sessionID || state?.currentSession?.data?.sessionID || "";
+		if (!resolvedSessionID) {
+			return this.createDefaultConversationRuntimeConfig();
+		}
+		if (!state.sessionRuntimeOptions.has(resolvedSessionID)) {
+			state.sessionRuntimeOptions.set(resolvedSessionID, this.createDefaultConversationRuntimeConfig());
+		}
+		return state.sessionRuntimeOptions.get(resolvedSessionID);
+	},
+
+	normalizeRegularItemContextMode(value) {
+		return String(value || "").trim() === "summary" ? "summary" : this.DEFAULT_REGULAR_ITEM_CONTEXT_MODE;
+	},
+
+	getWindowConversationRuntimeConfig(window = null) {
+		let state = window ? this.windows.get(window) : null;
+		if (!state) return this.createDefaultConversationRuntimeConfig();
+		return this.getConversationRuntimeConfig(state);
+	},
+
+	getPendingToolMenuConfig(state) {
+		if (!state.pendingToolMenuConfig) {
+			state.pendingToolMenuConfig = this.cloneConversationRuntimeConfig(this.getConversationRuntimeConfig(state));
+		}
+		return state.pendingToolMenuConfig;
+	},
+
+	getToolMenuEntries(window = null, state = null) {
+		let mineru = this.getMineruRuntime(window);
+		let config = state ? this.getConversationRuntimeConfig(state) : this.getWindowConversationRuntimeConfig(window);
+		return [
+			{
+				id: "search_library_items",
+				label: "搜索文章",
+				description: "按关键词、标题、作者在当前 Zotero 库里检索文献。",
+				enabled: !!config.enabledTools.search_library_items,
+				available: true
+			},
+			{
+				id: "get_article_content",
+				label: "获取文章内容",
+				description: "读取文章正文；没有 MinerU 解析结果时会先解析。",
+				enabled: !!config.enabledTools.get_article_content,
+				available: !!mineru,
+				unavailableReason: "需要已加载 zotero-mineru 插件"
+			}
+		];
+	},
+
+	buildEnabledToolDefinitions(window = null, state = null) {
+		return this.getToolMenuEntries(window, state)
+			.filter((tool) => tool.available && tool.enabled)
+			.map((tool) => {
+				if (tool.id === "search_library_items") {
+					return {
+						type: "function",
+						function: {
+							name: tool.id,
+							description: "Search Zotero library items by keywords, title, author, or year. Use this first when the user wants to find a paper in the local library.",
+							parameters: {
+								type: "object",
+								properties: {
+									query: { type: "string", description: "General keywords for title, author, or year." },
+									title: { type: "string", description: "Paper title or part of a title." },
+									author: { type: "string", description: "Author name." },
+									year: { type: "string", description: "Publication year." },
+									limit: { type: "integer", minimum: 1, maximum: 10, description: "Maximum number of results to return." }
+								},
+								additionalProperties: false
+							}
+						}
+					};
+				}
+				return {
+					type: "function",
+					function: {
+						name: tool.id,
+						description: "Get the article text for one Zotero library item. If MinerU Markdown is missing, parse the first PDF with zotero-mineru first.",
+						parameters: {
+							type: "object",
+							properties: {
+								itemRef: { type: "string", description: "Stable item reference returned by search_library_items, in libraryID:key format." }
+							},
+							required: ["itemRef"],
+							additionalProperties: false
+						}
+					}
+				};
+			});
 	},
 
 	clampChatHistoryMessageCount(value) {
