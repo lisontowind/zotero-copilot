@@ -366,7 +366,7 @@ Important current reality:
 
 Current user-facing copy behavior:
 
-- Default rendered markdown is not the primary selectable surface
+- Default rendered markdown is selectable and uses markdown-aware copy handling
 - Each bubble has a copy-original action
 - Each bubble can be toggled into raw markdown for manual selection/copy
 
@@ -413,9 +413,9 @@ Key assumptions:
 - sidebar mount node exists
 - inserted splitter/panel structure remains compatible with Zotero 8.x
 
-### 4. Raw markdown / copy UX
+### 4. Rendered markdown / copy UX
 
-The current raw-markdown-first approach is intentional. If rendered-text selection/copy is revisited again, treat it as high risk and validate with the local harness before changing behavior.
+Rendered-text selection/copy is enabled and should preserve markdown-aware clipboard output. Treat further copy UX changes as high risk and validate with the local harness before changing behavior.
 
 
 ## File Guide

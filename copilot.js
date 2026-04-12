@@ -3228,7 +3228,7 @@ ZoteroCopilot = {
 			.zc-message-reasoning-summary { cursor:pointer; color:var(--zc-subtle); }
 			.zc-message-reasoning-body { margin-top:6px; color:var(--zc-subtle); font-size:12px; min-height:0; overflow:visible; }
 			.zc-message-body { min-width:0; min-height:0; overflow:visible; }
-			.zc-markdown { user-select:none; -moz-user-select:none; min-width:0; min-height:0; max-width:100%; white-space:normal; overflow:visible; }
+			.zc-markdown { user-select:text; -moz-user-select:text; min-width:0; min-height:0; max-width:100%; white-space:normal; overflow:visible; }
 			.zc-markdown.is-raw-markdown { user-select:text; -moz-user-select:text; white-space:pre-wrap; white-space:break-spaces; overflow-x:auto; overflow-y:visible; font-family:Consolas, "SFMono-Regular", monospace; font-size:12px; line-height:1.5; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--zc-surface) 88%, #000 4%); border:1px solid var(--zc-soft-border); }
 			.zc-markdown-fallback { white-space:pre-wrap; }
 			.zc-markdown p, .zc-markdown ul, .zc-markdown ol, .zc-markdown pre, .zc-markdown blockquote, .zc-markdown h1, .zc-markdown h2, .zc-markdown h3, .zc-markdown h4, .zc-markdown h5, .zc-markdown h6, .zc-markdown table, .zc-markdown hr { margin:0 0 8px; }
