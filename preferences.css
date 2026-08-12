@@ -86,7 +86,6 @@
 .copilot-pref-grid input[type="url"],
 .copilot-pref-grid input[type="password"],
 .copilot-pref-grid input[type="number"],
-.copilot-pref-grid select,
 .copilot-pref-grid textarea {
 	width: 100%;
 	box-sizing: border-box;
@@ -101,11 +100,21 @@
 	margin: 0;
 }
 
-.copilot-pref-grid select {
-	appearance: auto;
-	-moz-appearance: menulist;
-	padding-right: 28px;
-	background-image: none;
+.copilot-pref-grid menulist {
+	width: 100%;
+	min-width: 0;
+	height: 28px;
+	min-height: 28px;
+	box-sizing: border-box;
+	margin: 0;
+	padding-block: 0;
+	font-size: 13px;
+}
+
+.copilot-pref-grid menulist > menupopup > menuitem {
+	min-height: 22px;
+	padding-block: 1px;
+	font-size: 13px;
 }
 
 .copilot-pref-grid textarea {

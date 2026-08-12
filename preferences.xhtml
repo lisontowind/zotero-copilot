@@ -15,7 +15,9 @@
 			<html:h3>供应商</html:h3>
 			<html:div class="copilot-pref-grid">
 				<html:label for="copilot-provider-select">已保存供应商</html:label>
-				<html:select id="copilot-provider-select"></html:select>
+				<menulist id="copilot-provider-select" native="true">
+					<menupopup></menupopup>
+				</menulist>
 
 				<html:label for="copilot-provider-name">供应商名称</html:label>
 				<html:input id="copilot-provider-name" type="text" placeholder="例如 OpenAI / DeepSeek / OpenRouter" />
@@ -47,7 +49,9 @@
 				</html:div>
 				<html:div class="copilot-pref-grid">
 					<html:label for="copilot-model-select">当前供应商的模型</html:label>
-					<html:select id="copilot-model-select"></html:select>
+					<menulist id="copilot-model-select" native="true">
+						<menupopup></menupopup>
+					</menulist>
 
 					<html:label for="copilot-model-name">显示名称</html:label>
 					<html:input id="copilot-model-name" type="text" placeholder="例如 GPT-4.1 / DeepSeek Reasoner" />
@@ -78,7 +82,9 @@
 				</html:div>
 				<html:div class="copilot-pref-grid">
 					<html:label for="copilot-title-model-select">自动命名模型</html:label>
-					<html:select id="copilot-title-model-select"></html:select>
+					<menulist id="copilot-title-model-select" native="true">
+						<menupopup></menupopup>
+					</menulist>
 				</html:div>
 			</html:section>
 
@@ -89,7 +95,9 @@
 				</html:div>
 				<html:div class="copilot-pref-grid">
 					<html:label for="copilot-system-prompt-select">已保存提示词</html:label>
-					<html:select id="copilot-system-prompt-select"></html:select>
+					<menulist id="copilot-system-prompt-select" native="true">
+						<menupopup></menupopup>
+					</menulist>
 
 					<html:label for="copilot-system-prompt-name">提示词名称</html:label>
 					<html:input id="copilot-system-prompt-name" type="text" placeholder="例如 学术助手 / 简洁总结 / 代码解释" />
@@ -150,5 +158,4 @@
 			</html:div>
 		</html:div>
 	</html:div>
-	<html:script src="preferences.js"></html:script>
 </vbox>

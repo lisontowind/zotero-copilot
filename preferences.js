@@ -1,6 +1,5 @@
 var ZoteroCopilotPreferences = {
 	PREF_BRANCH: "extensions.zotero-copilot.",
-	HTML_NS: "http://www.w3.org/1999/xhtml",
 	initialized: false,
 	currentProviderID: "",
 	currentModelID: "",
@@ -39,12 +38,44 @@ var ZoteroCopilotPreferences = {
 		return document.getElementById(id);
 	},
 
-	createSelectOption(label, value, { disabled = false } = {}) {
-		let option = document.createElementNS(this.HTML_NS, "option");
-		option.value = String(value || "");
-		option.textContent = label;
-		option.disabled = !!disabled;
-		return option;
+	createMenuItem(label, value, { disabled = false } = {}) {
+		let item = document.createXULElement("menuitem");
+		item.setAttribute("label", String(label || ""));
+		item.setAttribute("value", String(value || ""));
+		item.disabled = !!disabled;
+		return item;
+	},
+
+	populateMenulist(menulist, entries, selectedValue = "") {
+		if (!menulist) return "";
+		let popup = menulist.querySelector("menupopup");
+		if (!popup) {
+			popup = document.createXULElement("menupopup");
+			menulist.appendChild(popup);
+		}
+		while (popup.firstChild) popup.firstChild.remove();
+
+		let normalizedValue = String(selectedValue || "");
+		let selectedItem = null;
+		for (let entry of entries) {
+			let item = this.createMenuItem(entry.label, entry.value, { disabled: entry.disabled });
+			popup.appendChild(item);
+			if (!selectedItem && String(entry.value || "") === normalizedValue) {
+				selectedItem = item;
+			}
+		}
+
+		menulist.disabled = !entries.length;
+		menulist.selectedItem = selectedItem || popup.firstElementChild || null;
+		if (!menulist.selectedItem) menulist.selectedIndex = -1;
+		return String(menulist.value || "");
+	},
+
+	clearMenulistSelection(menulist) {
+		if (!menulist) return;
+		menulist.selectedItem = null;
+		menulist.selectedIndex = -1;
+		menulist.value = "";
 	},
 
 	setStatus(message, isError = false) {
@@ -498,13 +529,12 @@ var ZoteroCopilotPreferences = {
 		let select = this.$("copilot-provider-select");
 		if (!select) return;
 		let providers = this.getProviders();
-		select.textContent = "";
-		for (let provider of providers) {
-			select.appendChild(this.createSelectOption(provider.name, provider.id));
-		}
 		let chosen = targetID || this.currentProviderID || providers[0]?.id || "";
-		select.value = chosen;
-		this.currentProviderID = String(select.value || chosen || "");
+		this.currentProviderID = this.populateMenulist(
+			select,
+			providers.map((provider) => ({ label: provider.name, value: provider.id })),
+			chosen
+		);
 	},
 
 	renderModelSelect(targetID = "") {
@@ -513,15 +543,15 @@ var ZoteroCopilotPreferences = {
 		let providerID = String(this.currentProviderID || this.$("copilot-provider-select")?.value || "").trim();
 		let models = this.getModelsForProvider(providerID);
 		let activeID = this.getActiveModelID();
-		select.textContent = "";
-		for (let model of models) {
-			let label = `${model.name}${model.id === activeID ? " (当前)" : ""}`;
-			select.appendChild(this.createSelectOption(label, model.id));
-		}
 		let chosen = this.getPreferredModelForProvider(providerID, targetID)?.id || "";
-		select.value = chosen;
-		select.disabled = !models.length;
-		this.currentModelID = String(select.value || chosen || "");
+		this.currentModelID = this.populateMenulist(
+			select,
+			models.map((model) => ({
+				label: `${model.name}${model.id === activeID ? " (当前)" : ""}`,
+				value: model.id
+			})),
+			chosen
+		);
 	},
 
 	syncTitleModelControls() {
@@ -553,18 +583,20 @@ var ZoteroCopilotPreferences = {
 		let models = this.getModels();
 		let selectedID = this.resolveTitleModelID();
 		let followLabel = this.getModelDisplayLabel(this.getActiveModelID(), { includeProvider: true, showCurrent: false });
-		select.textContent = "";
-		select.appendChild(this.createSelectOption(
-			followLabel ? `跟随当前聊天模型（${followLabel}）` : "跟随当前聊天模型",
-			""
-		));
-		for (let model of models) {
-			select.appendChild(this.createSelectOption(
-				this.getModelDisplayLabel(model, { includeProvider: true, showCurrent: true }),
-				model.id
-			));
-		}
-		select.value = selectedID;
+		this.populateMenulist(
+			select,
+			[
+				{
+					label: followLabel ? `跟随当前聊天模型（${followLabel}）` : "跟随当前聊天模型",
+					value: ""
+				},
+				...models.map((model) => ({
+					label: this.getModelDisplayLabel(model, { includeProvider: true, showCurrent: true }),
+					value: model.id
+				}))
+			],
+			selectedID
+		);
 		select.disabled = !models.length;
 		this.updateTitleModelSummary();
 	},
@@ -581,15 +613,15 @@ var ZoteroCopilotPreferences = {
 		if (!select) return;
 		let prompts = this.getPrompts();
 		let activeID = this.getActivePromptID();
-		select.textContent = "";
-		for (let prompt of prompts) {
-			let label = `${prompt.name}${prompt.id === activeID ? " (当前)" : ""}`;
-			select.appendChild(this.createSelectOption(label, prompt.id));
-		}
 		let chosen = targetID || this.currentPromptID || activeID || prompts[0]?.id || "";
-		select.value = chosen;
-		select.disabled = !prompts.length;
-		this.currentPromptID = String(select.value || chosen || "");
+		this.currentPromptID = this.populateMenulist(
+			select,
+			prompts.map((prompt) => ({
+				label: `${prompt.name}${prompt.id === activeID ? " (当前)" : ""}`,
+				value: prompt.id
+			})),
+			chosen
+		);
 		this.updatePromptSummary();
 	},
 
@@ -618,7 +650,7 @@ var ZoteroCopilotPreferences = {
 			input.value = field.key === "modelsPath" ? "/models" : (field.key === "chatPath" ? "/chat/completions" : "");
 		}
 		let select = this.$("copilot-provider-select");
-		if (select) select.value = "";
+		this.clearMenulistSelection(select);
 		this.updateModelSectionSummary("", { draft: true });
 		this.renderModelSelect("");
 		this.syncTitleModelControls();
@@ -717,8 +749,8 @@ var ZoteroCopilotPreferences = {
 			if (input) input.value = "";
 		}
 		let select = this.$("copilot-system-prompt-select");
-		if (select) select.value = "";
 		this.renderPromptSelect("");
+		this.clearMenulistSelection(select);
 		if (!silent) this.setStatus("已切换到新提示词草稿");
 	},
 
@@ -732,10 +764,10 @@ var ZoteroCopilotPreferences = {
 			input.value = "";
 		}
 		let select = this.$("copilot-model-select");
-		if (select) select.value = "";
 		this.renderProviderSelect(resolvedProviderID);
 		this.updateModelSectionSummary(resolvedProviderID, { draft: !resolvedProviderID });
 		this.renderModelSelect("");
+		this.clearMenulistSelection(select);
 		this.syncTitleModelControls();
 		if (!silent) this.setStatus("已切换到新模型草稿");
 	},
@@ -1176,10 +1208,10 @@ var ZoteroCopilotPreferences = {
 		let modelSelect = this.$("copilot-model-select");
 		let titleModelSelect = this.$("copilot-title-model-select");
 		let promptSelect = this.$("copilot-system-prompt-select");
-		providerSelect?.addEventListener("change", () => this.loadProviderIntoForm(providerSelect.value));
-		modelSelect?.addEventListener("change", () => this.loadModelIntoForm(modelSelect.value));
-		titleModelSelect?.addEventListener("change", () => this.setCurrentTitleModel(titleModelSelect.value));
-		promptSelect?.addEventListener("change", () => this.loadPromptIntoForm(promptSelect.value));
+		providerSelect?.addEventListener("command", () => this.loadProviderIntoForm(providerSelect.value));
+		modelSelect?.addEventListener("command", () => this.loadModelIntoForm(modelSelect.value));
+		titleModelSelect?.addEventListener("command", () => this.setCurrentTitleModel(titleModelSelect.value));
+		promptSelect?.addEventListener("command", () => this.loadPromptIntoForm(promptSelect.value));
 		this.$("copilot-new-provider")?.addEventListener("click", () => this.clearProviderFormForNew());
 		this.$("copilot-save-provider")?.addEventListener("click", () => this.saveCurrentProvider());
 		this.$("copilot-delete-provider")?.addEventListener("click", () => this.deleteCurrentProvider());

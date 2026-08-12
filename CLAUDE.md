@@ -7,7 +7,7 @@ This repository contains a Zotero 8 plugin that adds a standalone Copilot sideba
 Current plugin identity:
 
 - Add-on ID: `zotero-copilot@example.com`
-- Current version: `0.3.20`
+- Current version: `0.3.28`
 - Author: `Lisontowind`
 - GitHub repo: `https://github.com/lisontowind/zotero-copilot`
 
@@ -474,7 +474,7 @@ Default pref declarations.
 
 - Use `apply_patch` for manual file edits.
 - Use `pwsh -File .\\build.ps1` from the repo root for packaging. The script stages only runtime files and writes a validated build to `dist\\zotero-copilot-<version>.xpi`.
-- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.3.20`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
+- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.3.28`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
 - Do not build `.xpi` files with `tar` or ad hoc archive commands. XPI must be a ZIP archive.
 - Keep `dist/`, local `.xpi` outputs, and vendor `.tgz` tarballs out of git.
 - Preserve existing user data migration behavior when touching session storage.
@@ -493,9 +493,9 @@ Default pref declarations.
 
 ## Current Status Summary
 
-As of version `0.3.20`:
+As of version `0.3.28`:
 
-- Plugin installs from `dist\\zotero-copilot-0.3.20.xpi` and packaging is done through `build.ps1`
+- Plugin installs from `dist\\zotero-copilot-0.3.28.xpi` and packaging is done through `build.ps1`
 - Preferences pane supports provider/model/system-prompt management plus chat history count and temperature
 - Session persistence under one Zotero store item exists
 - Sidebar session actions include rename, duplicate, delete, and new chat

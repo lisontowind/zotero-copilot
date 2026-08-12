@@ -30,7 +30,7 @@ function resolveKatexRuntime(scope) {
 }
 
 function install() {
-	log("Installed 0.3.20");
+	log("Installed 0.3.28");
 }
 
 async function startup({ id, version, rootURI }) {
@@ -100,7 +100,7 @@ async function startup({ id, version, rootURI }) {
 		let prefRegistered = false;
 		for (let options of prefPaneCandidates) {
 			try {
-				Zotero.PreferencePanes.register(options);
+				await Zotero.PreferencePanes.register(options);
 				prefRegistered = true;
 				break;
 			}
@@ -135,7 +135,7 @@ function onMainWindowUnload({ window }) {
 }
 
 function shutdown() {
-	log("Shutting down 0.3.20");
+	log("Shutting down 0.3.28");
 	ZoteroCopilot.removeFromAllWindows();
 	ZoteroCopilot = undefined;
 	ZoteroCopilotKaTeX = undefined;
@@ -145,5 +145,5 @@ function shutdown() {
 }
 
 function uninstall() {
-	log("Uninstalled 0.3.20");
+	log("Uninstalled 0.3.28");
 }
