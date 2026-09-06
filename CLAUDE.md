@@ -7,7 +7,7 @@ This repository contains a Zotero 8 plugin that adds a standalone Copilot sideba
 Current plugin identity:
 
 - Add-on ID: `zotero-copilot@example.com`
-- Current version: `0.3.28`
+- Current version: `0.3.29`
 - Author: `Lisontowind`
 - GitHub repo: `https://github.com/lisontowind/zotero-copilot`
 
@@ -245,6 +245,15 @@ Key functions:
 - `resolvePDFAttachmentSource(...)`
 - `resolveRegularItemSource(...)`
 - `extractPDFTextWithFallback(...)`
+
+MinerU attachment reading (v0.3.29):
+
+- `isMineruParseAttachment(...)` recognizes Markdown and HTML attachments tagged `#MinerU-Parse`; ordinary HTML attachments are not accepted.
+- `readAttachmentMarkdown(...)` is shared by context ingestion, article-content tools, and AI summaries. It returns `{ markdown, filePath, source }`.
+- HTML results prefer the same-directory, same-basename `.md` file. If missing, unreadable, or empty, read the `markdown` field from the HTML `mineru-source` JSON script. Never use rendered HTML as Markdown.
+- Existing results can be read without an enabled MinerU runtime. Context failures retain parsing/PDF fallback; article-content tools and summaries report read failures.
+- Preserve source IDs, parser labels, cleanup, and per-entrypoint text limits.
+- Run `node scripts/mineru-reading-harness.js` for recognition, companion/embedded fallback, failures, context/tool/summary integration, and newly saved HTML results.
 
 Current UI model:
 
@@ -493,9 +502,10 @@ Default pref declarations.
 
 ## Current Status Summary
 
-As of version `0.3.28`:
+As of version `0.3.29`:
 
-- Plugin installs from `dist\\zotero-copilot-0.3.28.xpi` and packaging is done through `build.ps1`
+- Plugin installs from `dist\\zotero-copilot-0.3.29.xpi` and packaging is done through `build.ps1`
+- MinerU Markdown and HTML parse attachments share a reader with companion Markdown and embedded JSON fallback
 - Preferences pane supports provider/model/system-prompt management plus chat history count and temperature
 - Session persistence under one Zotero store item exists
 - Sidebar session actions include rename, duplicate, delete, and new chat

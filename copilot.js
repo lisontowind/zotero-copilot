@@ -4975,11 +4975,7 @@ ZoteroCopilot = {
 	async runGetArticleContentTool(args, { window = null } = {}) {
 		let item = this.resolveItemRef(args?.itemRef);
 		let markdownAttachment = await this.ensureMineruMarkdownAttachment(item, window || this.getToolExecutionWindow());
-		let path = await this.getAttachmentFilePath(markdownAttachment);
-		if (!path) {
-			throw new Error("Markdown 附件文件不存在");
-		}
-		let rawText = await IOUtils.readUTF8(path);
+		let { markdown: rawText } = await this.readAttachmentMarkdown(markdownAttachment);
 		let content = this.compactWhitespace(this.removeLocalImageReferences(rawText));
 		if (!content) {
 			throw new Error("文章内容为空");
@@ -5184,7 +5180,7 @@ ZoteroCopilot = {
 			if (this.isImageAttachment(item)) {
 				return { ok: false, reason: "图片附件暂不支持" };
 			}
-			if (this.isMarkdownAttachment(item)) {
+			if (this.isMarkdownAttachment(item) || this.isMineruParseAttachment(item)) {
 				return await this.resolveMarkdownSource(item);
 			}
 			if (item.isPDFAttachment?.()) {
@@ -5211,6 +5207,51 @@ ZoteroCopilot = {
 		return /\.(md|markdown)$/i.test(title);
 	},
 
+	isMineruParseAttachment(item) {
+		if (!item?.isAttachment?.() || !item.getTags?.().some(tag => tag.tag === "#MinerU-Parse")) return false;
+		let contentType = String(item.attachmentContentType || item.getField?.("contentType") || "").toLowerCase();
+		let name = String(item.attachmentFilename || item.getField?.("title") || "").trim();
+		return this.isMarkdownAttachment(item) || contentType === "text/html" || /\.(md|markdown|html?)$/i.test(name);
+	},
+
+	async readAttachmentMarkdown(attachment) {
+		let filePath = await this.getAttachmentFilePath(attachment);
+		if (!filePath) throw new Error("Markdown 附件文件不存在");
+		let contentType = String(attachment.attachmentContentType || attachment.getField?.("contentType") || "").toLowerCase();
+		let isHTML = /\.html?$/i.test(filePath) || contentType === "text/html";
+		if (!isHTML) {
+			let markdown = await IOUtils.readUTF8(filePath);
+			if (!markdown.trim()) throw new Error("Markdown 附件没有可用文本");
+			return { markdown, filePath, source: "markdown-file" };
+		}
+		if (!this.isMineruParseAttachment(attachment)) throw new Error("仅支持 MinerU 解析 HTML 附件");
+		let companionPath = filePath.replace(/\.html?$/i, ".md");
+		if (companionPath !== filePath) {
+			try {
+				let markdown = await IOUtils.readUTF8(companionPath);
+				if (markdown.trim()) return { markdown, filePath: companionPath, source: "companion-markdown" };
+			}
+			catch (_error) { /* A synced HTML attachment may lack its companion file. */ }
+		}
+		try {
+			let html = await IOUtils.readUTF8(filePath);
+			// Read only inert JSON source metadata, never rendered HTML or executable scripts.
+			for (let match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+				let attributes = new Map();
+				for (let attribute of match[1].matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+					attributes.set(attribute[1].toLowerCase(), attribute[2] ?? attribute[3] ?? attribute[4]);
+				}
+				if (attributes.get("id") !== "mineru-source" || attributes.get("type")?.toLowerCase() !== "application/json") continue;
+				let source = JSON.parse(match[2]);
+				if (typeof source?.markdown === "string" && source.markdown.trim()) {
+					return { markdown: source.markdown, filePath, source: "html-embedded-markdown" };
+				}
+			}
+		}
+		catch (_error) { /* Report a single actionable error after both sources fail. */ }
+		throw new Error("无法读取 MinerU 原始 Markdown：配套 .md 和 HTML 内嵌源文本均不可用，请重新解析 PDF。");
+	},
+
 	async resolveNoteSource(noteItem) {
 		let rawHTML = noteItem.getNote?.() || "";
 		let text = this.compactWhitespace(this.stripHTMLToPlainText(rawHTML));
@@ -5233,9 +5274,13 @@ ZoteroCopilot = {
 	},
 
 	async resolveMarkdownSource(attachment) {
-		let path = await this.getAttachmentFilePath(attachment);
-		if (!path) return { ok: false, reason: "Markdown 附件文件不存在" };
-		let rawText = await IOUtils.readUTF8(path);
+		let rawText;
+		try {
+			({ markdown: rawText } = await this.readAttachmentMarkdown(attachment));
+		}
+		catch (error) {
+			return { ok: false, reason: error.message || String(error) };
+		}
 		let text = this.compactWhitespace(this.removeLocalImageReferences(rawText));
 		if (!text) return { ok: false, reason: "Markdown 附件没有可用文本" };
 		return {
@@ -5331,11 +5376,7 @@ ZoteroCopilot = {
 		let attachmentIDs = parentItem.getAttachments?.() || [];
 		for (let attachmentID of attachmentIDs) {
 			let attachment = Zotero.Items.get(attachmentID);
-			if (!attachment) continue;
-			let tags = attachment.getTags?.() || [];
-			let contentType = String(attachment.attachmentContentType || attachment.getField?.("contentType") || "").toLowerCase();
-			let title = String(attachment.getField?.("title") || "").trim();
-			if (tags.some((tag) => tag.tag === "#MinerU-Parse") && (contentType === "text/markdown" || /\.(md|markdown)$/i.test(title))) {
+			if (this.isMineruParseAttachment(attachment)) {
 				return attachment;
 			}
 		}
@@ -5389,12 +5430,7 @@ ZoteroCopilot = {
 	},
 
 	async buildMineruSummaryPlainText(markdownAttachment) {
-		let filePath = await this.getAttachmentFilePath(markdownAttachment);
-		if (!filePath) {
-			throw new Error("MinerU Markdown 附件文件不存在");
-		}
-		let fileBytes = await IOUtils.read(filePath);
-		let plainText = new TextDecoder("utf-8").decode(fileBytes);
+		let { markdown: plainText } = await this.readAttachmentMarkdown(markdownAttachment);
 		if (plainText.length > 60000) {
 			plainText = plainText.slice(0, 60000);
 		}
@@ -5455,19 +5491,19 @@ ZoteroCopilot = {
 	},
 
 	async extractPDFTextWithFallback(attachment, parentItem, window) {
+		let markdownAttachment = parentItem ? this.findMineruMarkdownAttachment(parentItem) : null;
+		if (markdownAttachment) {
+			let markdownResult = await this.resolveMarkdownSource(markdownAttachment);
+			if (markdownResult.ok) {
+				return {
+					text: markdownResult.sourceRef.textSnapshot,
+					parser: "mineru-markdown"
+				};
+			}
+		}
+
 		let mineru = this.getMineruRuntime(window);
 		if (mineru) {
-			let markdownAttachment = parentItem ? this.findMineruMarkdownAttachment(parentItem) : null;
-			if (markdownAttachment) {
-				let markdownResult = await this.resolveMarkdownSource(markdownAttachment);
-				if (markdownResult.ok) {
-					return {
-						text: markdownResult.sourceRef.textSnapshot,
-						parser: "mineru-markdown"
-					};
-				}
-			}
-
 			try {
 				let settings = mineru.getSettings?.();
 				if (settings?.apiToken && typeof mineru.parseAttachmentWithMineru === "function") {
