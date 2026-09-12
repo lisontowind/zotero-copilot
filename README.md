@@ -11,6 +11,12 @@ Zotero Copilot is a Zotero 8 plugin that adds a chat sidebar to Zotero for askin
 - Markdown and formula rendering in the sidebar
 - GitHub Actions release workflow that builds and publishes tagged releases
 
+## MinerU result selection
+
+MinerU results are matched to their source PDF through Related Items, including standalone PDFs and attachments moved to another parent. When adding a whole library item, Copilot uses the first PDF with a linked result, or the first PDF if none has one. Multiple results linked to the same PDF use the highest attachment ID.
+
+Older unlinked results are reused only when there is one PDF and one parse attachment with no link to another PDF. Items without PDFs can use a unique unlinked parse attachment. Ambiguous results are not guessed. HTML results still read companion Markdown or embedded Markdown source.
+
 ## Requirements
 
 - Zotero `8.0` to `9.*`

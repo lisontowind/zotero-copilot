@@ -1079,9 +1079,8 @@ ZoteroCopilot = {
 				items: [pdfAttachment]
 			});
 		}
-		let mineruParent = parentItem || (pdfAttachment?.parentItemID ? Zotero.Items.get(pdfAttachment.parentItemID) : null);
-		let mineruAttachment = mineruParent ? this.findMineruMarkdownAttachment(mineruParent) : null;
-		if (mineruParent && mineruAttachment) {
+		let mineruAttachment = this.findMineruMarkdownAttachment(parentItem, pdfAttachment);
+		if (mineruAttachment) {
 			actions.push({
 				id: "mineru-markdown",
 				label: "将 MinerU 解析结果添加到上下文",
@@ -5337,7 +5336,7 @@ ZoteroCopilot = {
 			}
 		}
 
-		let pdfAttachment = this.findFirstPDFAttachment(item);
+		let pdfAttachment = this.findMineruSourcePDF(item);
 		if (!pdfAttachment) {
 			return { ok: false, reason: "该文献下没有可用 PDF 附件" };
 		}
@@ -5371,16 +5370,43 @@ ZoteroCopilot = {
 		return null;
 	},
 
-	findMineruMarkdownAttachment(parentItem) {
-		if (!parentItem?.isRegularItem?.()) return null;
-		let attachmentIDs = parentItem.getAttachments?.() || [];
-		for (let attachmentID of attachmentIDs) {
-			let attachment = Zotero.Items.get(attachmentID);
-			if (this.isMineruParseAttachment(attachment)) {
-				return attachment;
-			}
-		}
-		return null;
+	getMineruRelatedItems(item) {
+		return (item?.relatedItems || []).map(key =>
+			Zotero.Items.getByLibraryAndKey(item.libraryID, key)
+		).filter(related => related && !related.deleted && related.libraryID === item.libraryID);
+	},
+
+	findLinkedMineruAttachment(pdf) {
+		if (!pdf?.isPDFAttachment?.() || pdf.deleted) return null;
+		return this.getMineruRelatedItems(pdf)
+			.filter(item => this.isMineruParseAttachment(item))
+			.sort((a, b) => b.id - a.id)[0] || null;
+	},
+
+	getMineruChildAttachments(parentItem) {
+		if (!parentItem?.isRegularItem?.()) return [];
+		return (parentItem.getAttachments?.() || []).map(id => Zotero.Items.get(id))
+			.filter(item => item && !item.deleted && item.libraryID === parentItem.libraryID);
+	},
+
+	findMineruSourcePDF(parentItem) {
+		let pdfs = this.getMineruChildAttachments(parentItem).filter(item => item.isPDFAttachment?.());
+		return pdfs.find(pdf => this.findLinkedMineruAttachment(pdf)) || pdfs[0] || null;
+	},
+
+	findMineruMarkdownAttachment(parentItem, sourcePDF = null) {
+		let pdf = sourcePDF || this.findMineruSourcePDF(parentItem);
+		let linked = this.findLinkedMineruAttachment(pdf);
+		if (linked) return linked;
+		// Historical results are safe only when the parent has an unambiguous source.
+		let children = this.getMineruChildAttachments(parentItem);
+		let pdfs = children.filter(item => item.isPDFAttachment?.());
+		if (pdfs.length > 1 || (pdf && (pdfs.length !== 1 || pdfs[0].id !== pdf.id))) return null;
+		let results = children.filter(item => this.isMineruParseAttachment(item));
+		if (results.length !== 1) return null;
+		let result = results[0];
+		if (this.getMineruRelatedItems(result).some(item => item.isPDFAttachment?.() && item.id !== pdf?.id)) return null;
+		return result;
 	},
 
 	findMineruSummaryNote(parentItem) {
@@ -5408,7 +5434,7 @@ ZoteroCopilot = {
 		if (!settings?.apiToken) {
 			throw new Error("zotero-mineru 尚未配置 API Token");
 		}
-		let attachment = this.findFirstPDFAttachment(parentItem);
+		let attachment = this.findMineruSourcePDF(parentItem);
 		if (!attachment) {
 			throw new Error("该文献下没有可用 PDF 附件");
 		}
@@ -5416,13 +5442,14 @@ ZoteroCopilot = {
 		if (typeof mineru.saveResultAsMarkdownAttachment !== "function") {
 			throw new Error("zotero-mineru 未暴露保存 Markdown 的接口");
 		}
-		await mineru.saveResultAsMarkdownAttachment({
+		let saveResult = await mineru.saveResultAsMarkdownAttachment({
 			attachment,
 			parentItem,
 			parsedResult,
 			settings
 		});
-		let saved = this.findMineruMarkdownAttachment(parentItem);
+		if (saveResult?.warning) this.log(`MinerU: ${saveResult.warning}`);
+		let saved = saveResult?.attachment || this.findMineruMarkdownAttachment(parentItem, attachment);
 		if (!saved) {
 			throw new Error("MinerU 解析已完成，但未找到保存后的 Markdown 附件");
 		}
@@ -5491,7 +5518,7 @@ ZoteroCopilot = {
 	},
 
 	async extractPDFTextWithFallback(attachment, parentItem, window) {
-		let markdownAttachment = parentItem ? this.findMineruMarkdownAttachment(parentItem) : null;
+		let markdownAttachment = this.findMineruMarkdownAttachment(parentItem, attachment);
 		if (markdownAttachment) {
 			let markdownResult = await this.resolveMarkdownSource(markdownAttachment);
 			if (markdownResult.ok) {
@@ -5510,17 +5537,20 @@ ZoteroCopilot = {
 					let parsed = await mineru.parseAttachmentWithMineru(attachment, settings, {});
 					let rawText = parsed?.rawMarkdownText || parsed?.markdownText || "";
 					if (rawText.trim()) {
-						if (parentItem && typeof mineru.saveResultAsMarkdownAttachment === "function") {
+						if (typeof mineru.saveResultAsMarkdownAttachment === "function") {
 							try {
-								await mineru.saveResultAsMarkdownAttachment({
+								let saveResult = await mineru.saveResultAsMarkdownAttachment({
 									attachment,
 									parentItem,
 									parsedResult: parsed,
 									settings
 								});
+								if (saveResult?.warning) this.log(`MinerU: ${saveResult.warning}`);
+								let saved = saveResult?.attachment || this.findMineruMarkdownAttachment(parentItem, attachment);
+								if (saved) rawText = (await this.readAttachmentMarkdown(saved)).markdown;
 							}
 							catch (saveError) {
-								this.log(`Failed to save MinerU markdown attachment: ${saveError}`);
+								this.log(`Failed to save or read MinerU markdown attachment: ${saveError}`);
 							}
 						}
 						return {
