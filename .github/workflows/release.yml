@@ -42,6 +42,13 @@ jobs:
             throw "Release tag ${env:GITHUB_REF_NAME} points to ${env:GITHUB_SHA}, which is not on origin/main. Push main first, then push the tag."
           }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check JavaScript and run regressions
+        run: node scripts/check.js
+
       - name: Build XPI
         shell: pwsh
         run: .\build.ps1

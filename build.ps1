@@ -98,6 +98,12 @@ try {
 }
 finally {
 	if (Test-Path -LiteralPath $stageRoot) {
-		Remove-Item -LiteralPath $stageRoot -Recurse -Force
+		$resolvedStageRoot = (Resolve-Path -LiteralPath $stageRoot).ProviderPath
+		$resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+		if (-not $resolvedStageRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+			[System.IO.Path]::GetFileName($resolvedStageRoot) -notmatch '^zotero-copilot-build-[a-f0-9]{32}$') {
+			throw "Refusing to remove unexpected staging directory: $resolvedStageRoot"
+		}
+		Remove-Item -LiteralPath $resolvedStageRoot -Recurse -Force
 	}
 }

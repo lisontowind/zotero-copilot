@@ -4,6 +4,7 @@ ZoteroCopilot = {
 	rootURI: null,
 	initialized: false,
 	windows: new WeakMap(),
+	sessionSaveQueues: new Map(),
 
 	PREF_BRANCH: "extensions.zotero-copilot.",
 	COLLECTION_NAME: "Zotero Copilot Chats",
@@ -17,6 +18,7 @@ ZoteroCopilot = {
 	PREF_PANE_ID: "zotero-copilot-prefpane",
 	SOURCE_LIMIT_CHARS: 40000,
 	CONTEXT_LIMIT_CHARS: 120000,
+	REQUEST_LIMIT_CHARS: 120000,
 	TOOL_CONTENT_LIMIT_CHARS: 50000,
 	MAX_HISTORY_MESSAGES: 20,
 	DEFAULT_CHAT_HISTORY_MESSAGE_COUNT: 20,
@@ -128,6 +130,8 @@ ZoteroCopilot = {
 	removeFromWindow(window) {
 		let state = this.windows.get(window);
 		if (!state) return;
+		state.disposed = true;
+		if (state.isSending) this.handleStopGeneration(state);
 		try {
 			this.detachViewListeners(state);
 			state.toolbarSeparator?.remove();
@@ -1327,47 +1331,67 @@ ZoteroCopilot = {
 		if (!state.isSending) return;
 		state.stopRequested = true;
 		state.stopButton.disabled = true;
-		this.finalizeStoppedRequest(state).catch((e) => this.handleStateError(state, "停止生成失败", e));
+		this.setStatus(state, "正在停止生成...");
 		try {
 			state.requestAbortController?.abort?.();
 		}
 		catch (_e) {}
 		try {
-			state.currentStreamReader?.cancel?.();
+			Promise.resolve(state.currentStreamReader?.cancel?.()).catch((e) => this.log(`Stream cancellation failed: ${e}`));
 		}
 		catch (_e) {}
-		this.setStatus(state, "正在停止生成...");
+		this.finalizeStoppedRequest(state).catch((e) => this.handleStateError(state, "停止生成失败", e));
 	},
 
 	async finalizeStoppedRequest(state) {
 		let active = state.currentStreaming;
-		if (!active || active.finalized) return;
+		if (!active) return;
+		if (active.finalizingPromise) return active.finalizingPromise;
+		if (active.finalized) return;
 		active.finalized = true;
-		state.activeRequestID = null;
-		if (active.streaming?.stopWaiting) {
-			active.streaming.stopWaiting();
-		}
+		active.stopped = true;
+		active.finalizingPromise = (async () => {
+			try {
+				active.streaming?.stopWaiting?.();
+				this.cancelStreamingRender(state, active.streaming?.contentRender);
+				this.cancelStreamingRender(state, active.streaming?.reasoningRender);
+				active.streaming?.node?.remove();
+				let message = active.streaming?.message;
+				if (message && (message.reasoning || message.content)
+					&& !active.session.data.messages.some((entry) => entry.messageID === message.messageID)) {
+					message.stopped = true;
+					message.stoppedAt = new Date().toISOString();
+					active.session.data.messages.push(message);
+				}
+				active.session.data.updatedAt = new Date().toISOString();
+				await this.saveSession(active.session);
+				if (state.activeRequestID === active.requestID) {
+					this.renderCurrentSession(state);
+					this.setStatus(state, "已停止生成");
+				}
+			}
+			finally {
+				this.finishUserTurn(state, active);
+			}
+		})();
+		return active.finalizingPromise;
+	},
+
+	finishUserTurn(state, active) {
+		active.streaming?.stopWaiting?.();
 		this.cancelStreamingRender(state, active.streaming?.contentRender);
 		this.cancelStreamingRender(state, active.streaming?.reasoningRender);
-		if (active.streaming?.node?.isConnected) {
-			active.streaming.node.remove();
-		}
-		if (active.streaming?.message && (active.streaming.message.reasoning || active.streaming.message.content)) {
-			active.streaming.message.stopped = true;
-			active.streaming.message.stoppedAt = new Date().toISOString();
-			active.session.data.messages.push(active.streaming.message);
-		}
-		active.session.data.updatedAt = new Date().toISOString();
-		await this.saveSession(active.session);
-		state.currentStreaming = null;
+		active.finalized = true;
+		if (state.activeRequestID !== active.requestID) return;
 		state.isSending = false;
 		state.requestAbortController = null;
 		state.currentStreamReader = null;
+		state.currentStreaming = null;
+		state.stopRequested = false;
+		state.activeRequestID = null;
 		state.sendButton.disabled = false;
 		state.input.disabled = false;
 		this.updateSendButton(state);
-		this.renderCurrentSession(state);
-		this.setStatus(state, "已停止生成");
 	},
 
 	jumpToSourceRef(sourceRef, window) {
@@ -3310,9 +3334,12 @@ ZoteroCopilot = {
 		`;
 	},
 
-	async refreshSessions(state, { targetSessionID = null } = {}) {
-		state.sessions = await this.getAllSessions();
-		if (!state.sessions.length) state.sessions = [await this.createSession()];
+	async refreshSessions(state, { targetSessionID = null, requestID = null } = {}) {
+		let sessions = await this.getAllSessions();
+		if (state.disposed || (requestID && state.activeRequestID !== requestID)) return;
+		if (!sessions.length) sessions = [await this.createSession()];
+		if (state.disposed || (requestID && state.activeRequestID !== requestID)) return;
+		state.sessions = sessions;
 		let sessionID = targetSessionID || state.currentSession?.data?.sessionID || state.sessions[0]?.data?.sessionID || null;
 		await this.switchToSession(state, sessionID);
 	},
@@ -4129,79 +4156,86 @@ ZoteroCopilot = {
 		this.setStatus(state, "已删除最后一条消息");
 	},
 
-	async runUserTurn(state, { session, userMessage, replaceFromMessageID = null, regenerateExistingUser = false }) {
+	async runUserTurn(state, { session, userMessage, replaceFromMessageID = null }) {
 		let requestID = this.makeID("request");
-		state.isSending = true;
 		let AbortCtor = typeof AbortController !== "undefined" ? AbortController : state.window?.AbortController;
-		state.requestAbortController = AbortCtor ? new AbortCtor() : null;
+		let controller = AbortCtor ? new AbortCtor() : null;
+		let active = { requestID, session, streaming: null, finalized: false, stopped: false };
+		let streaming = null;
+		let titleTask = null;
+		let fallbackTitle = "";
+		let initialSaved = false;
+		let replyAdded = false;
+		let phase = "保存会话";
+		state.isSending = true;
+		state.requestAbortController = controller;
 		state.stopRequested = false;
 		state.currentStreamReader = null;
 		state.activeRequestID = requestID;
-		state.currentStreaming = null;
+		state.currentStreaming = active;
+		state.requestContextNotice = "";
 		state.sendButton.disabled = true;
 		state.input.disabled = true;
-		this.updateSendButton(state);
-
-		let messages = Array.isArray(session.data.messages) ? [...session.data.messages] : [];
-		if (replaceFromMessageID) {
-			let replaceIndex = this.findMessageIndex(messages, replaceFromMessageID);
-			if (replaceIndex >= 0) {
-				let replaceMessage = messages[replaceIndex];
-				if (replaceMessage.role === "assistant") {
-					let previousUser = this.findPreviousUserMessage(messages, replaceFromMessageID);
-					let previousUserIndex = previousUser ? this.findMessageIndex(messages, previousUser.messageID) : replaceIndex;
-					messages = messages.slice(0, Math.max(previousUserIndex, 0));
-				}
-				else {
-					messages = messages.slice(0, replaceIndex);
+		try {
+			this.updateSendButton(state);
+			let messages = Array.isArray(session.data.messages) ? [...session.data.messages] : [];
+			if (replaceFromMessageID) {
+				let replaceIndex = this.findMessageIndex(messages, replaceFromMessageID);
+				if (replaceIndex >= 0) {
+					let replaceMessage = messages[replaceIndex];
+					if (replaceMessage.role === "assistant") {
+						let previousUser = this.findPreviousUserMessage(messages, replaceFromMessageID);
+						let previousUserIndex = previousUser ? this.findMessageIndex(messages, previousUser.messageID) : replaceIndex;
+						messages = messages.slice(0, Math.max(previousUserIndex, 0));
+					}
+					else {
+						messages = messages.slice(0, replaceIndex);
+					}
 				}
 			}
-		}
-		let shouldAutoTitle = (
-			userMessage.role === "user"
-			&& !replaceFromMessageID
-			&& !session.data.autoTitleLocked
-			&& !messages.some((entry) => entry?.role === "user")
-		);
-		if (!regenerateExistingUser || replaceFromMessageID === null || userMessage.role !== "user") {
+			let shouldAutoTitle = (
+				userMessage.role === "user"
+				&& !replaceFromMessageID
+				&& !session.data.autoTitleLocked
+				&& !messages.some((entry) => entry?.role === "user")
+			);
 			messages.push(userMessage);
-		}
-		else {
-			messages.push(userMessage);
-		}
-		session.data.messages = messages;
-		if (shouldAutoTitle) {
-			try {
-				session.data.title = await this.generateSessionTitle({
+			session.data.messages = messages;
+			if (shouldAutoTitle) {
+				fallbackTitle = this.makeSessionTitle(userMessage.content || "");
+				session.data.title = fallbackTitle;
+				session.data.autoTitleLocked = true;
+			}
+			session.data.updatedAt = new Date().toISOString();
+			this.renderCurrentSession(state);
+			await this.saveSession(session);
+			initialSaved = true;
+			if (active.finalized || state.activeRequestID !== requestID || state.stopRequested) return;
+
+			streaming = this.appendStreamingAssistantMessage(state);
+			active.streaming = streaming;
+			if (shouldAutoTitle) {
+				// Only the title result runs in parallel. Its save waits until this turn has finished.
+				titleTask = this.generateSessionTitle({
 					userPrompt: userMessage.content || "",
 					sourceRefs: userMessage.sourceRefs || [],
-					signal: state.requestAbortController?.signal || null
+					signal: controller?.signal || null
+				}).catch((error) => {
+					if (error?.name !== "AbortError") this.log(`Auto title generation failed: ${error}`);
+					return null;
 				});
 			}
-			catch (titleError) {
-				this.log(`Auto title generation failed: ${titleError}`);
-				session.data.title = this.makeSessionTitle(userMessage.content || "");
-			}
-			session.data.autoTitleLocked = true;
-		}
-		session.data.updatedAt = new Date().toISOString();
-		this.renderCurrentSession(state);
-		await this.saveSession(session);
-
-		let streaming = this.appendStreamingAssistantMessage(state);
-		state.currentStreaming = {
-			requestID,
-			session,
-			streaming,
-			finalized: false
-		};
-		this.setStatus(state, "正在请求模型...");
-		try {
+			phase = "请求模型";
+			this.setStatus(state, "正在请求模型...");
 			let reply = await this.requestChatCompletion({
 				session: session.data,
-				signal: state.requestAbortController?.signal,
+				signal: controller?.signal,
 				state,
 				onReader: (reader) => {
+					if (active.finalized || state.activeRequestID !== requestID) {
+						Promise.resolve(reader?.cancel?.()).catch((e) => this.log(`Stream cancellation failed: ${e}`));
+						return;
+					}
 					state.currentStreamReader = reader || null;
 				},
 				onDelta: ({ type, text }) => {
@@ -4235,67 +4269,94 @@ ZoteroCopilot = {
 				this.finalizeStreamingText(state, streaming.reasoningRender, streaming.message.reasoning || "");
 			}
 			session.data.messages.push(streaming.message);
+			replyAdded = true;
 			session.data.updatedAt = new Date().toISOString();
+			phase = "保存回答";
 			await this.saveSession(session);
-			await this.refreshSessions(state, { targetSessionID: session.data.sessionID });
-			if (state.currentStreaming?.requestID === requestID) {
-				state.currentStreaming.finalized = true;
-				state.currentStreaming = null;
+			if (active.finalized || state.activeRequestID !== requestID) return;
+			phase = "刷新会话";
+			await this.refreshSessions(state, { targetSessionID: session.data.sessionID, requestID });
+			if (!active.finalized && state.activeRequestID === requestID) {
+				this.setStatus(state, "已完成" + state.requestContextNotice);
 			}
-			this.setStatus(state, "已完成");
 		}
 		catch (e) {
-			if (state.activeRequestID !== requestID || state.stopRequested) {
+			if (active.finalized || state.activeRequestID !== requestID || state.stopRequested) {
 				return;
 			}
-			streaming.stopWaiting();
-			this.cancelStreamingRender(state, streaming.contentRender);
-			this.cancelStreamingRender(state, streaming.reasoningRender);
-			streaming.node.remove();
+			streaming?.stopWaiting?.();
+			this.cancelStreamingRender(state, streaming?.contentRender);
+			this.cancelStreamingRender(state, streaming?.reasoningRender);
+			streaming?.node?.remove();
 			if (e?.name === "AbortError") {
-				if (streaming.message.reasoning || streaming.message.content) {
-					streaming.message.stopped = true;
-					streaming.message.stoppedAt = new Date().toISOString();
-					session.data.messages.push(streaming.message);
-					session.data.updatedAt = new Date().toISOString();
-					await this.saveSession(session);
-					this.renderCurrentSession(state);
-				}
-				if (state.currentStreaming?.requestID === requestID) {
-					state.currentStreaming.finalized = true;
-					state.currentStreaming = null;
-				}
-				this.setStatus(state, "已停止生成");
+				await this.finalizeStoppedRequest(state);
 				return;
 			}
-			session.data.messages.push({
-				messageID: this.makeID("assistant-error"),
-				role: "assistant",
-				content: "",
-				error: e.message || String(e),
-				createdAt: new Date().toISOString()
-			});
-			session.data.updatedAt = new Date().toISOString();
-			await this.saveSession(session);
-			this.renderCurrentSession(state);
-			if (state.currentStreaming?.requestID === requestID) {
-				state.currentStreaming.finalized = true;
-				state.currentStreaming = null;
+			Zotero.logError(e);
+			let failure = `${phase}失败：${e.message || e}`;
+			if (initialSaved && !replyAdded) {
+				if (streaming?.message && (streaming.message.content || streaming.message.reasoning)) {
+					session.data.messages.push(streaming.message);
+				}
+				session.data.messages.push({
+					messageID: this.makeID("assistant-error"),
+					role: "assistant",
+					content: "",
+					error: e.message || String(e),
+					createdAt: new Date().toISOString()
+				});
+				session.data.updatedAt = new Date().toISOString();
+				try {
+					await this.saveSession(session);
+				}
+				catch (saveError) {
+					Zotero.logError(saveError);
+					failure += `；保存会话失败：${saveError.message || saveError}`;
+				}
 			}
-			this.setStatus(state, `请求失败：${e.message || e}`, true);
+			this.renderCurrentSession(state);
+			this.setStatus(state, failure, true);
 		}
 		finally {
-			if (state.activeRequestID === requestID || state.activeRequestID === null) {
-				state.isSending = false;
-				state.requestAbortController = null;
-				state.currentStreamReader = null;
-				state.stopRequested = false;
-				state.activeRequestID = null;
-				state.sendButton.disabled = false;
-				state.input.disabled = false;
-				this.updateSendButton(state);
+			if (active.finalizingPromise) {
+				await active.finalizingPromise.catch(() => {});
+			}
+			else {
+				this.finishUserTurn(state, active);
+			}
+			if (titleTask) {
+				titleTask.then((title) => {
+					if (!title || active.stopped || state.disposed) return;
+					return this.applyGeneratedSessionTitle(state, session, userMessage.messageID, fallbackTitle, title);
+				}).catch((error) => this.log(`Auto title save failed: ${error}`));
 			}
 		}
+	},
+
+	async applyGeneratedSessionTitle(state, session, firstMessageID, fallbackTitle, title) {
+		return this.queueSessionSave(session, async () => {
+			if (session.attachment?.deleted || state.disposed) return;
+			let sessionID = session.data.sessionID;
+			let liveSessions = () => [session, state.currentSession, ...(state.sessions || [])]
+				.filter((entry) => entry?.data?.sessionID === sessionID);
+			if (liveSessions().some((entry) => entry.data.title !== fallbackTitle)) return;
+			// Reload before patching only the title, so a later turn cannot be overwritten.
+			let latest = await this.loadSessionAttachment(session.item, session.attachment);
+			if (!latest || latest.data.title !== fallbackTitle
+				|| latest.data.messages.find((entry) => entry.role === "user")?.messageID !== firstMessageID) return;
+			if (session.attachment?.deleted || state.disposed
+				|| liveSessions().some((entry) => entry.data.title !== fallbackTitle)) return;
+			latest.store = session.store;
+			latest.data.title = title;
+			await this.writeSession(latest);
+			for (let entry of liveSessions()) {
+				if (entry.data.title === fallbackTitle) entry.data.title = title;
+			}
+			if (state.currentSession?.data?.sessionID === sessionID && state.currentSession.data.title === title && !state.disposed) {
+				state.sessionSelect.setAttribute("tooltiptext", `选择会话：${title}`);
+				this.renderSessionMenu(state);
+			}
+		});
 	},
 
 	getLLMSettingsForProfile(profileID = "") {
@@ -4665,42 +4726,116 @@ ZoteroCopilot = {
 		return mergedPayload;
 	},
 
-	buildChatMessages(session) {
+	getRequestMessagesSize(messages) {
+		// A provider-independent hard bound; this is serialized character size, not a token count.
+		return JSON.stringify(messages).length;
+	},
+
+	trimRequestHistory(messages) {
+		let result = [...messages];
+		while (this.getRequestMessagesSize(result) > this.REQUEST_LIMIT_CHARS) {
+			let firstUser = result.findIndex((entry) => entry.role === "user");
+			let nextUser = result.findIndex((entry, index) => index > firstUser && entry.role === "user");
+			if (firstUser < 0 || nextUser < 0) {
+				throw new Error("当前问题、系统提示词或工具结果超过上下文上限，请缩短内容或减少引用文献");
+			}
+			// Keep whole turns, including any assistant/tool-call pairs in the newest turn.
+			result.splice(firstUser, nextUser - firstUser);
+		}
+		return result;
+	},
+
+	assertRequestBudget(messages) {
+		if (this.getRequestMessagesSize(messages) > this.REQUEST_LIMIT_CHARS) {
+			throw new Error("请求上下文超过上限，请缩短内容或减少引用文献");
+		}
+	},
+
+	getRequestTextSize(text) {
+		return JSON.stringify(String(text)).length - 2;
+	},
+
+	truncateRequestText(text, maxChars) {
+		let source = String(text || "");
+		if (this.getRequestTextSize(source) <= maxChars) return source;
+		let marker = "\n...[truncated]";
+		if (maxChars <= this.getRequestTextSize(marker)) return "";
+		let low = 0;
+		let high = Math.min(source.length, Math.max(0, Math.floor(maxChars)));
+		while (low < high) {
+			let middle = Math.ceil((low + high) / 2);
+			if (this.getRequestTextSize(source.slice(0, middle) + marker) <= maxChars) low = middle;
+			else high = middle - 1;
+		}
+		// Avoid leaving half of a UTF-16 surrogate pair at the boundary.
+		if (low > 0 && /[\uD800-\uDBFF]/.test(source[low - 1])) low--;
+		return low ? source.slice(0, low) + marker : "";
+	},
+
+	buildChatMessages(session, { onBudget = null } = {}) {
 		let activePrompt = this.getActiveSystemPrompt();
-		let messages = [{
+		let systemMessage = {
 			role: "system",
 			content: String(activePrompt?.content || this.DEFAULT_SYSTEM_PROMPT_CONTENT).trim()
-		}];
-		for (let message of (session.messages || []).filter((entry) => !entry.error).slice(-this.getChatHistoryMessageCount())) {
-			if (message.role === "assistant") {
-				messages.push({ role: "assistant", content: message.content || "" });
-				continue;
-			}
-			let content = String(message.content || "");
-			let sourceBlock = this.buildSourceContextBlock(message.sourceRefs || []);
+		};
+		let history = (session.messages || [])
+			.filter((entry) => !entry.error && ["user", "assistant"].includes(entry.role))
+			.slice(-this.getChatHistoryMessageCount());
+		while (history[0]?.role === "assistant") history.shift();
+		let bareMessages = history.map((entry) => ({ role: entry.role, content: String(entry.content || "") }));
+		let sources = new Map(bareMessages.map((message, index) => [message, history[index].sourceRefs || []]));
+		let messages = this.trimRequestHistory([systemMessage, ...bareMessages]);
+		let stats = { droppedMessages: bareMessages.length + 1 - messages.length,
+			truncatedSources: 0, omittedSources: 0, deduplicatedSources: 0 };
+		let remaining = this.REQUEST_LIMIT_CHARS - this.getRequestMessagesSize(messages);
+		let seenSources = new Set();
+		let wrapper = "\n\nUser message:\n";
+		// Reserve all retained conversation text first; spend the remaining source budget newest first.
+		for (let index = messages.length - 1; index > 0; index--) {
+			let message = messages[index];
+			if (message.role !== "user") continue;
+			let sourceBlock = this.buildSourceContextBlock(sources.get(message), {
+				maxChars: Math.min(this.CONTEXT_LIMIT_CHARS, remaining - this.getRequestTextSize(wrapper)),
+				seenSources,
+				stats
+			});
 			if (sourceBlock) {
-				content = `${sourceBlock}\n\nUser message:\n${content}`;
+				message.content = sourceBlock + wrapper + message.content;
+				remaining -= this.getRequestTextSize(sourceBlock + wrapper);
 			}
-			messages.push({ role: "user", content });
 		}
+		this.assertRequestBudget(messages);
+		onBudget?.(stats);
 		return messages;
 	},
 
-	buildSourceContextBlock(sourceRefs) {
-		if (!sourceRefs.length) return "";
-		let parts = ["Context sources:"];
-		let total = 0;
+	buildSourceContextBlock(sourceRefs = [], { maxChars = this.CONTEXT_LIMIT_CHARS, seenSources = new Set(), stats = null } = {}) {
+		let block = "Context sources:";
+		let used = this.getRequestTextSize(block);
+		let included = 0;
 		for (let [index, sourceRef] of sourceRefs.entries()) {
 			let text = String(sourceRef.textSnapshot || "").trim();
 			if (!text) continue;
-			let remaining = this.CONTEXT_LIMIT_CHARS - total;
-			if (remaining <= 0) break;
-			let limit = Math.min(this.SOURCE_LIMIT_CHARS, remaining);
-			if (text.length > limit) text = text.slice(0, limit) + "\n...[truncated]";
-			total += text.length;
-			parts.push(`[${index + 1}] ${sourceRef.label}\nkind=${sourceRef.resolutionKind}; parser=${sourceRef.parser}\n${text}`);
+			let identity = sourceRef.sourceID || [sourceRef.libraryID, sourceRef.itemKey, sourceRef.label, sourceRef.parser];
+			let key = JSON.stringify([identity, text]);
+			if (seenSources.has(key)) {
+				if (stats) stats.deduplicatedSources++;
+				continue;
+			}
+			let header = `\n\n[${index + 1}] ${sourceRef.label}\nkind=${sourceRef.resolutionKind}; parser=${sourceRef.parser}\n`;
+			let available = maxChars - used - this.getRequestTextSize(header);
+			let excerpt = this.truncateRequestText(text, Math.min(this.SOURCE_LIMIT_CHARS, available));
+			if (!excerpt) {
+				if (stats) stats.omittedSources++;
+				continue;
+			}
+			if (stats && excerpt !== text) stats.truncatedSources++;
+			block += header + excerpt;
+			used += this.getRequestTextSize(header + excerpt);
+			seenSources.add(key);
+			included++;
 		}
-		return parts.join("\n\n");
+		return included ? block : "";
 	},
 
 	getToolExecutionWindow() {
@@ -4735,6 +4870,7 @@ ZoteroCopilot = {
 	},
 
 	async requestChatCompletionJSON({ endpoint, apiKey, payload, signal }) {
+		this.assertRequestBudget(payload.messages);
 		let response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
@@ -4769,7 +4905,15 @@ ZoteroCopilot = {
 		let temperature = this.getLLMTemperature();
 		let endpoint = this.resolveAPIEndpoint(llm.apiBaseURL, llm.chatPath || "/chat/completions");
 		let conversation = (messages || []).map((message) => ({ ...message }));
+		let requestID = state?.activeRequestID;
+		let checkCancelled = () => {
+			if (signal?.aborted || (state && (state.stopRequested || state.activeRequestID !== requestID))) {
+				throw new DOMException("Aborted", "AbortError");
+			}
+		};
 		for (let round = 0; round < this.MAX_TOOL_CALL_ROUNDS; round++) {
+			checkCancelled();
+			conversation = this.trimRequestHistory(conversation);
 			let payload = this.mergeRequestPayload(
 				{
 					model: llm.model,
@@ -4788,6 +4932,7 @@ ZoteroCopilot = {
 				payload,
 				signal
 			});
+			checkCancelled();
 			let assistantMessage = json?.choices?.[0]?.message;
 			if (!assistantMessage) {
 				throw new Error("模型返回为空");
@@ -4813,7 +4958,9 @@ ZoteroCopilot = {
 				return content;
 			}
 			for (let toolCall of toolCalls) {
+				checkCancelled();
 				let toolResult = await this.runToolCall(toolCall, { window });
+				checkCancelled();
 				conversation.push({
 					role: "tool",
 					tool_call_id: String(toolCall?.id || ""),
@@ -4999,6 +5146,7 @@ ZoteroCopilot = {
 			throw new Error("请先在设置中填写供应商 API Base URL、API Key 和模型名");
 		}
 		let extraParams = this.parseOptionalJSONObject(llm.requestJSON, "额外 JSON 参数");
+		messages = this.trimRequestHistory(messages);
 		let temperature = this.getLLMTemperature();
 		let endpoint = this.resolveAPIEndpoint(llm.apiBaseURL, llm.chatPath || "/chat/completions");
 		if (!allowStream) {
@@ -5025,7 +5173,7 @@ ZoteroCopilot = {
 			});
 		}
 		catch (streamError) {
-			if (sawStreamChunk) throw streamError;
+			if (sawStreamChunk || signal?.aborted || streamError?.name === "AbortError") throw streamError;
 			return await this.requestChatCompletionNonStream({
 				endpoint,
 				apiKey: llm.apiKey,
@@ -5038,7 +5186,12 @@ ZoteroCopilot = {
 
 	async requestChatCompletion({ session, onDelta, signal, onReader, state = null }) {
 		let llm = this.getLLMSettings();
-		let messages = this.buildChatMessages(session);
+		let messages = this.buildChatMessages(session, { onBudget: (stats) => {
+			if (!state) return;
+			state.requestContextNotice = stats.droppedMessages || stats.truncatedSources || stats.omittedSources
+				? "（部分历史或文献内容已裁剪）" : "";
+			this.setStatus(state, "正在请求模型..." + state.requestContextNotice);
+		} });
 		let toolWindow = this.getToolExecutionWindow();
 		if (this.buildEnabledToolDefinitions(toolWindow, state).length) {
 			return await this.requestMessagesCompletionWithTools({
@@ -5081,6 +5234,7 @@ ZoteroCopilot = {
 	},
 
 	async requestChatCompletionStream({ endpoint, apiKey, payload, onDelta, signal, onReader }) {
+		this.assertRequestBudget(payload.messages);
 		let response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
@@ -5113,39 +5267,47 @@ ZoteroCopilot = {
 		let decoder = new TextDecoder("utf-8");
 		let fullText = "";
 		let pending = "";
-		while (true) {
-			if (signal?.aborted) {
-				throw new DOMException("Aborted", "AbortError");
-			}
-			let { done, value } = await reader.read();
-			if (done) break;
-			pending += decoder.decode(value, { stream: true });
-			let lines = pending.split(/\r?\n/);
-			pending = lines.pop() || "";
-			for (let rawLine of lines) {
-				let line = rawLine.trim();
-				if (!line.startsWith("data:")) continue;
-				let payloadText = line.slice(5).trim();
-				if (!payloadText || payloadText === "[DONE]") continue;
-				let parsed;
-				try { parsed = JSON.parse(payloadText); } catch (_e) { continue; }
-				let chunks = this.extractStreamDelta(parsed);
-				for (let chunk of chunks) {
-					if (signal?.aborted) {
-						throw new DOMException("Aborted", "AbortError");
+		let finished = false;
+		try {
+			while (!finished) {
+				if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+				let { done, value } = await reader.read();
+				if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+				pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
+				let lines = pending.split(/\r?\n/);
+				// Flush the decoder and the final line even when the server omits its trailing newline.
+				pending = done ? "" : (lines.pop() || "");
+				for (let rawLine of lines) {
+					let line = rawLine.trim();
+					if (!line.startsWith("data:")) continue;
+					let payloadText = line.slice(5).trim();
+					if (payloadText === "[DONE]") {
+						finished = true;
+						break;
 					}
-					if (chunk.type === "content") {
-						fullText += chunk.text;
+					if (!payloadText) continue;
+					let parsed;
+					try { parsed = JSON.parse(payloadText); } catch (_e) { continue; }
+					for (let chunk of this.extractStreamDelta(parsed)) {
+						if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+						if (chunk.type === "content") fullText += chunk.text;
+						onDelta?.(chunk);
 					}
-					onDelta?.(chunk);
 				}
+				if (done) break;
 			}
+		}
+		finally {
+			if (finished) Promise.resolve(reader.cancel?.()).catch((e) => this.log(`Stream cancellation failed: ${e}`));
+			reader.releaseLock?.();
+			onReader?.(null);
 		}
 		if (!fullText.trim()) throw new Error("模型未返回任何文本");
 		return fullText;
 	},
 
 	async requestChatCompletionNonStream({ endpoint, apiKey, payload, onDelta, signal }) {
+		this.assertRequestBudget(payload.messages);
 		let response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
@@ -5964,7 +6126,21 @@ ZoteroCopilot = {
 		return { item, attachment, data };
 	},
 
-	async saveSession(session) {
+	queueSessionSave(session, task) {
+		let key = session.data.sessionID || session.attachment?.id;
+		let previous = this.sessionSaveQueues.get(key) || Promise.resolve();
+		let queued = previous.catch(() => {}).then(task);
+		this.sessionSaveQueues.set(key, queued);
+		return queued.finally(() => {
+			if (this.sessionSaveQueues.get(key) === queued) this.sessionSaveQueues.delete(key);
+		});
+	},
+
+	saveSession(session) {
+		return this.queueSessionSave(session, () => this.writeSession(session));
+	},
+
+	async writeSession(session) {
 		let store = session.store || await this.ensureConversationStore();
 		session.data = this.normalizeSessionData(session.data);
 		session.data.updatedAt = session.data.updatedAt || new Date().toISOString();

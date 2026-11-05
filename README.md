@@ -17,6 +17,12 @@ MinerU results are matched to their source PDF through Related Items, including 
 
 Older unlinked results are reused only when there is one PDF and one parse attachment with no link to another PDF. Items without PDFs can use a unique unlinked parse attachment. Ambiguous results are not guessed. HTML results still read companion Markdown or embedded Markdown source.
 
+## Chat context and recovery
+
+Outbound message context has a shared limit of 120,000 serialized JSON characters across the system prompt, retained conversation, and source excerpts. This is a character limit rather than a model-specific token count. The newest question stays intact; oversized history is removed by complete turns. Source excerpts use the remaining space, newest first, and identical snapshots of the same source are included once. The sidebar reports when history or excerpts are trimmed. Request budgeting does not modify saved conversations or source snapshots.
+
+An oversized current question or tool result produces an explicit error before an oversized request is sent. Tool-call turns remain intact. Failed saves and stopped requests restore the composer; partial answers stay available when a connection fails. Automatic titles run in the background and update only the title, preserving later messages and manual renames.
+
 ## Requirements
 
 - Zotero `8.0` to `9.*`
@@ -30,6 +36,16 @@ Older unlinked results are reused only when there is one PDF and one parse attac
 The plugin update metadata is published through [`updates.json`](./updates.json).
 
 ## Development
+
+### Checks
+
+With Node.js 20 or newer, run:
+
+```powershell
+node scripts/check.js
+```
+
+This checks JavaScript syntax and runs the MinerU reader, Markdown copy, and chat-runtime regressions. The chat checks cover save failures, cancellation, late responses, background titles, context budgets, and stream boundaries without making network requests. Branch pushes and pull requests run these checks and build the XPI; tagged releases run the checks before packaging and publishing.
 
 ### Build
 
@@ -47,7 +63,7 @@ Tagged releases are published through GitHub Actions.
 
 1. Ensure `manifest.json` contains the intended version.
 2. Commit changes to `main`.
-3. Push a matching tag such as `v0.2.75`.
+3. Push a matching tag such as `v0.3.31`.
 
 The workflow in [`.github/workflows/release.yml`](./.github/workflows/release.yml) will:
 

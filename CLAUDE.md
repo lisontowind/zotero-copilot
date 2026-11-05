@@ -7,7 +7,7 @@ This repository contains a Zotero 8 plugin that adds a standalone Copilot sideba
 Current plugin identity:
 
 - Add-on ID: `zotero-copilot@example.com`
-- Current version: `0.3.30`
+- Current version: `0.3.31`
 - Author: `Lisontowind`
 - GitHub repo: `https://github.com/lisontowind/zotero-copilot`
 
@@ -280,6 +280,10 @@ Transport details:
 - stream first, non-stream fallback
 - extra request JSON allowed but reserved keys are protected
 - temperature is now a dedicated pref-backed field
+- All outbound message arrays have a shared 120,000 serialized-character budget (not a token count). `buildChatMessages` reserves conversation text, drops oversized history by whole turns, and adds deduplicated source snapshots newest first. Oversized current questions/tool results fail before sending.
+- Initial saves and final saves are inside the turn's cleanup path. `finishUserTurn` checks request identity so an old request cannot reset a newer one; stopping retains reader cancellation without `AbortController`.
+- Background auto-titles patch only the latest persisted title through the session save queue; preserve manual renames, later messages, and deleted sessions.
+- Streaming flushes the final UTF-8/data line, stops at `[DONE]`, and never falls back after cancellation.
 
 Relevant functions:
 
@@ -486,13 +490,14 @@ Default pref declarations.
 
 - Use `apply_patch` for manual file edits.
 - Use `pwsh -File .\\build.ps1` from the repo root for packaging. The script stages only runtime files and writes a validated build to `dist\\zotero-copilot-<version>.xpi`.
-- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.3.28`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
+- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.3.31`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
 - Do not build `.xpi` files with `tar` or ad hoc archive commands. XPI must be a ZIP archive.
 - Keep `dist/`, local `.xpi` outputs, and vendor `.tgz` tarballs out of git.
 - Preserve existing user data migration behavior when touching session storage.
 - Avoid changing storage shape casually; multiple migration paths already exist.
 - The sidebar `Duplicate` button clones the current session and opens the clone. It does not copy text to the clipboard.
 - Session auto-titling runs when the first user message is sent and can use a dedicated title model.
+- Run `node scripts/check.js` before packaging changes. It checks syntax and all three regression harnesses; branch/PR checks and tagged releases use the same entry point.
 - During generation, keep the session switcher stable and avoid refresh paths that destroy the in-flight streaming node.
 - Stop generation must keep the reader-cancel fallback path intact when a usable global `AbortController` is unavailable.
 - Be careful when touching `renderMessages(...)`, `refreshSessions(...)`, `switchToSession(...)`, and `runUserTurn(...)` together.
@@ -505,9 +510,12 @@ Default pref declarations.
 
 ## Current Status Summary
 
-As of version `0.3.30`:
+As of version `0.3.31`:
 
-- Plugin installs from `dist\\zotero-copilot-0.3.30.xpi` and packaging is done through `build.ps1`
+- Plugin installs from `dist\\zotero-copilot-0.3.31.xpi` and packaging is done through `build.ps1`
+- Send/stop failures restore the composer, background titles preserve later edits, and stale request callbacks cannot replace a newer turn
+- Outbound message context shares a serialized-character budget with source deduplication and trimming notices
+- Syntax and all three regression harnesses run for branch/PR checks and before tagged releases
 - MinerU Markdown and HTML parse attachments share a reader with companion Markdown and embedded JSON fallback
 - Preferences pane supports provider/model/system-prompt management plus chat history count and temperature
 - Session persistence under one Zotero store item exists
