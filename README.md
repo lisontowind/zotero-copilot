@@ -1,6 +1,6 @@
 # Zotero Copilot
 
-Zotero Copilot is a Zotero 8 plugin that adds a chat sidebar to Zotero for asking questions about your library items, PDF attachments, and extracted Markdown context.
+Zotero Copilot is a plugin for Zotero 8–10 that adds a chat sidebar to Zotero for asking questions about your library items, PDF attachments, and extracted Markdown context.
 
 ## Features
 
@@ -25,7 +25,9 @@ An oversized current question or tool result produces an explicit error before a
 
 ## Requirements
 
-- Zotero `8.0` to `9.*`
+- Zotero `8.0` to `10.0.*`
+
+Version `0.3.32` supports Zotero 10's multiple collection selection through the plural library-selection API, with a fallback for Zotero 8 and 9. Library searches use the library of the selected items, or the selected collection rows when no items are selected. When the selection spans multiple libraries, select items or collections from one library before searching.
 
 ## Installation
 
@@ -45,7 +47,7 @@ With Node.js 20 or newer, run:
 node scripts/check.js
 ```
 
-This checks JavaScript syntax and runs the MinerU reader, Markdown copy, and chat-runtime regressions. The chat checks cover save failures, cancellation, late responses, background titles, context budgets, and stream boundaries without making network requests. Branch pushes and pull requests run these checks and build the XPI; tagged releases run the checks before packaging and publishing.
+This checks JavaScript syntax and runs the MinerU reader, Markdown copy, and chat-runtime regressions. The chat checks cover Zotero 8–10 library selection, save failures, cancellation, late responses, background titles, context budgets, and stream boundaries without making network requests. Branch pushes and pull requests run these checks and build the XPI; tagged releases run the checks before packaging and publishing.
 
 ### Build
 
@@ -63,13 +65,13 @@ Tagged releases are published through GitHub Actions.
 
 1. Ensure `manifest.json` contains the intended version.
 2. Commit changes to `main`.
-3. Push a matching tag such as `v0.3.31`.
+3. Push a matching tag such as `v0.3.32`.
 
 The workflow in [`.github/workflows/release.yml`](./.github/workflows/release.yml) will:
 
 - build the XPI
 - publish a GitHub Release asset
-- update `updates.json`
+- update `updates.json` using the add-on ID and compatibility range from `manifest.json`
 
 ## Repository
 

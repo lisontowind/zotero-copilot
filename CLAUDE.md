@@ -2,12 +2,12 @@
 
 ## Overview
 
-This repository contains a Zotero 8 plugin that adds a standalone Copilot sidebar to the main Zotero window.
+This repository contains a Zotero 8–10 plugin that adds a standalone Copilot sidebar to the main Zotero window.
 
 Current plugin identity:
 
 - Add-on ID: `zotero-copilot@example.com`
-- Current version: `0.3.31`
+- Current version: `0.3.32`
 - Author: `Lisontowind`
 - GitHub repo: `https://github.com/lisontowind/zotero-copilot`
 
@@ -427,7 +427,7 @@ Key assumptions:
 
 - toolbar anchor exists
 - sidebar mount node exists
-- inserted splitter/panel structure remains compatible with Zotero 8.x
+- inserted splitter/panel structure remains compatible with Zotero 8–10
 
 ### 4. Rendered markdown / copy UX
 
@@ -490,7 +490,7 @@ Default pref declarations.
 
 - Use `apply_patch` for manual file edits.
 - Use `pwsh -File .\\build.ps1` from the repo root for packaging. The script stages only runtime files and writes a validated build to `dist\\zotero-copilot-<version>.xpi`.
-- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.3.31`; the workflow builds the XPI, updates `updates.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
+- GitHub release automation lives in `.github/workflows/release.yml`. Publish by pushing a tag like `v0.3.32`; the workflow builds the XPI, updates `updates.json` using the add-on ID and compatibility range from `manifest.json`, pushes metadata back to `main`, and creates a GitHub Release asset named `zotero-copilot.xpi`.
 - Do not build `.xpi` files with `tar` or ad hoc archive commands. XPI must be a ZIP archive.
 - Keep `dist/`, local `.xpi` outputs, and vendor `.tgz` tarballs out of git.
 - Preserve existing user data migration behavior when touching session storage.
@@ -510,9 +510,10 @@ Default pref declarations.
 
 ## Current Status Summary
 
-As of version `0.3.31`:
+As of version `0.3.32`:
 
-- Plugin installs from `dist\\zotero-copilot-0.3.31.xpi` and packaging is done through `build.ps1`
+- Plugin installs from `dist\\zotero-copilot-0.3.32.xpi` and packaging is done through `build.ps1`
+- Zotero `8.0` through `10.0.*` are supported. Library tools prefer `getSelectedLibraryIDs()` on Zotero 10 and retain the singular fallback for Zotero 8/9; selections spanning libraries require an explicit single-library selection.
 - Send/stop failures restore the composer, background titles preserve later edits, and stale request callbacks cannot replace a newer turn
 - Outbound message context shares a serialized-character budget with source deduplication and trimming notices
 - Syntax and all three regression harnesses run for branch/PR checks and before tagged releases

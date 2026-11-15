@@ -30,6 +30,79 @@ function runtime({ abortController = true } = {}) {
 	return { c, scope, errors };
 }
 
+test("Zotero 10 library searches use plural selection without calling the legacy getter", async () => {
+	const { c, scope } = runtime();
+	let searchedLibraryID;
+	scope.Zotero.Search = class {
+		addCondition() {}
+		async search() { searchedLibraryID = this.libraryID; return []; }
+	};
+	const window = { ZoteroPane: {
+		getSelectedItems: () => [],
+		getSelectedLibraryIDs: () => [7],
+		getSelectedLibraryID() { throw new Error("Removed singular selection API"); }
+	} };
+	const result = await c.runSearchLibraryItemsTool({ query: "Reference" }, { window });
+	assert.equal(searchedLibraryID, 7);
+	assert.equal(result.ok, true);
+	assert.equal(result.count, 0);
+});
+
+test("Zotero 8 and 9 retain the singular library selection fallback", () => {
+	const { c } = runtime();
+	const window = { ZoteroPane: { getSelectedItems: () => [], getSelectedLibraryID: () => 9 } };
+	assert.equal(c.getActiveLibraryID(window), 9);
+});
+
+test("a selection spanning libraries requires an explicit library before searching", async () => {
+	const { c, scope } = runtime();
+	scope.Zotero.Libraries = { userLibraryID: 1 };
+	let searches = 0;
+	scope.Zotero.Search = class {
+		addCondition() {}
+		async search() { searches++; return []; }
+	};
+	for (const selectedItems of [[], [
+		{ libraryID: 7, isRegularItem: () => true },
+		{ libraryID: 8, isRegularItem: () => true }
+	]]) {
+		const window = { ZoteroPane: { getSelectedItems: () => selectedItems, getSelectedLibraryIDs: () => [7, 8] } };
+		await assert.rejects(c.runSearchLibraryItemsTool({ query: "Reference" }, { window }), /多个资料库/);
+	}
+	assert.equal(searches, 0);
+});
+
+test("selected items from one library disambiguate a multiple-library view", () => {
+	const { c } = runtime();
+	const window = { ZoteroPane: {
+		getSelectedItems: () => [{ libraryID: 8 }, { libraryID: 8 }],
+		getSelectedLibraryIDs: () => [7, 8]
+	} };
+	assert.equal(c.getActiveLibraryID(window), 8);
+});
+
+test("multiple selected collection rows in one library can be searched", () => {
+	const { c } = runtime();
+	const window = { ZoteroPane: {
+		getSelectedItems: () => [], getSelectedLibraryIDs: () => [7, 7],
+		getSelectedLibraryID() { throw new Error("Multiple collection rows selected"); }
+	} };
+	assert.equal(c.getActiveLibraryID(window), 7);
+});
+
+test("the supplied window takes precedence and an empty selection falls back to the user library", () => {
+	const { c, scope } = runtime();
+	scope.Zotero.Libraries = { userLibraryID: 3 };
+	scope.Zotero.getMainWindows = () => [{ ZoteroPane: { getSelectedItems: () => [], getSelectedLibraryIDs: () => [8] } }];
+	const window = { ZoteroPane: { getSelectedItems: () => [], getSelectedLibraryIDs: () => [7] } };
+	assert.equal(c.getActiveLibraryID(window), 7);
+	scope.Zotero.getMainWindows = () => [];
+	window.ZoteroPane.getSelectedLibraryIDs = () => [];
+	window.ZoteroPane.getSelectedLibraryID = () => { throw new Error("Must not call the legacy getter on Zotero 10"); };
+	assert.equal(c.getActiveLibraryID(window), 3);
+	assert.equal(c.getActiveLibraryID(), 3);
+});
+
 function chatRig(options) {
 	const rig = runtime(options);
 	const { c } = rig;

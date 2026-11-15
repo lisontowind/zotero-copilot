@@ -4993,13 +4993,20 @@ ZoteroCopilot = {
 			}
 		}
 		for (let candidate of candidateWindows) {
-			let selectedItems = candidate.ZoteroPane?.getSelectedItems?.() || [];
-			let selectedRegular = selectedItems.find((item) => item?.libraryID && item.isRegularItem?.());
-			if (selectedRegular?.libraryID) return selectedRegular.libraryID;
-			let selectedItem = this.getSelectedItem(candidate);
-			if (selectedItem?.libraryID) return selectedItem.libraryID;
-			let selectedLibraryID = candidate.ZoteroPane?.getSelectedLibraryID?.();
-			if (Number.isFinite(selectedLibraryID) && selectedLibraryID > 0) return selectedLibraryID;
+			let pane = candidate.ZoteroPane;
+			let selectedItems = pane.getSelectedItems?.() || [];
+			let libraryIDs = selectedItems.map((item) => item?.libraryID);
+			if (!libraryIDs.length) {
+				// Zotero 10 supports multiple collection rows; its singular getter can throw.
+				libraryIDs = typeof pane.getSelectedLibraryIDs === "function"
+					? pane.getSelectedLibraryIDs() || []
+					: [pane.getSelectedLibraryID?.()];
+			}
+			libraryIDs = [...new Set(libraryIDs.filter((id) => Number.isFinite(id) && id > 0))];
+			if (libraryIDs.length > 1) {
+				throw new Error("当前选择涉及多个资料库，请先选择同一资料库中的条目或分类后再检索");
+			}
+			if (libraryIDs.length) return libraryIDs[0];
 		}
 		return Zotero.Libraries?.userLibraryID || 1;
 	},

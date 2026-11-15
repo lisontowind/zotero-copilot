@@ -64,21 +64,24 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         with:
           script: |
+            const fs = require('node:fs');
+            const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+            const { id, strict_min_version, strict_max_version } = manifest.applications.zotero;
             const version = process.env.RELEASE_VERSION;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const path = "updates.json";
             const contentObject = {
               addons: {
-                "zotero-copilot@example.com": {
+                [id]: {
                   updates: [
                     {
                       version,
                       update_link: `https://github.com/${owner}/${repo}/releases/latest/download/zotero-copilot.xpi`,
                       applications: {
                         zotero: {
-                          strict_min_version: "8.0",
-                          strict_max_version: "9.*"
+                          strict_min_version,
+                          strict_max_version
                         }
                       }
                     }
